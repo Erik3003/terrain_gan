@@ -47,45 +47,19 @@ sample in this dataset is a 28x28 grayscale image associated with a label from
 10 classes (e.g. trouser, pullover, sneaker, etc.)
 """
 
-IMG_SHAPE = (128, 128, 1)
+gpus = tf.config.experimental.list_physical_devices('GPU')
+tf.config.experimental.set_memory_growth(gpus[0], True)
+
+IMG_SHAPE = (256, 256, 1)
 BATCH_SIZE = 64
 
 # Size of the noise vector
 noise_dim = 128
 
 train_images = []
-paths = []
-
-for i in range(1, 5001):
-    path = str(i)
-    while len(path) < 4:
-        path = "0" + path
-    path = "data\\" + path + "_h.png"
-    paths.append(path)
-
-for path in paths:
-    image = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
-    #image = cv2.resize(image, IMG_SHAPE[:2])
-    train_images.append(image[:128, :128])
-    train_images.append(image[128:256, :128])
-    train_images.append(image[256:384, :128])
-    train_images.append(image[384:, :128])
-
-    train_images.append(image[:128, 128:256])
-    train_images.append(image[128:256, 128:256])
-    train_images.append(image[256:384, 128:256])
-    train_images.append(image[384:, 128:256])
-
-    train_images.append(image[:128, 256:384])
-    train_images.append(image[128:256, 256:384])
-    train_images.append(image[256:384, 256:384])
-    train_images.append(image[384:, 256:384])
-
-    train_images.append(image[:128, 384:])
-    train_images.append(image[128:256, 384:])
-    train_images.append(image[256:384, 384:])
-    train_images.append(image[384:, 384:])
-
+for index in range(38216):
+    image = cv2.imread("data\\img\\" + str(index) + ".png", cv2.IMREAD_GRAYSCALE)
+    train_images.append(image)
 
 train_images = np.array(train_images, dtype="float32")
 train_images = train_images.reshape(train_images.shape[0], *IMG_SHAPE)
@@ -138,13 +112,24 @@ def get_discriminator_model():
     # x = layers.ZeroPadding2D((2, 2))(img_input)
     x = conv_block(
         img_input,
-        64,
+        32,
         kernel_size=(5, 5),
         strides=(2, 2),
         use_bn=False,
         use_bias=True,
         activation=layers.LeakyReLU(0.2),
         use_dropout=False,
+        drop_value=0.3,
+    )
+    x = conv_block(
+        x,
+        64,
+        kernel_size=(5, 5),
+        strides=(2, 2),
+        use_bn=False,
+        activation=layers.LeakyReLU(0.2),
+        use_bias=True,
+        use_dropout=True,
         drop_value=0.3,
     )
     x = conv_block(
@@ -161,17 +146,6 @@ def get_discriminator_model():
     x = conv_block(
         x,
         256,
-        kernel_size=(5, 5),
-        strides=(2, 2),
-        use_bn=False,
-        activation=layers.LeakyReLU(0.2),
-        use_bias=True,
-        use_dropout=True,
-        drop_value=0.3,
-    )
-    x = conv_block(
-        x,
-        512,
         kernel_size=(5, 5),
         strides=(2, 2),
         use_bn=False,
@@ -226,31 +200,67 @@ def upsample_block(
 
 def get_generator_model():
     noise = layers.Input(shape=(noise_dim,))
-    x = layers.Dense(16 * 16 * 256, use_bias=False)(noise)
+    x = layers.Dense(4 * 4 * 256, use_bias=False)(noise)
     x = layers.BatchNormalization()(x)
-    x = layers.LeakyReLU(0.2)(x)
+    x = layers.ReLU()(x)
 
-    x = layers.Reshape((16, 16, 256))(x)
+    x = layers.Reshape((4, 4, 256))(x)
+    x = upsample_block(
+        x,
+        256,
+        layers.ReLU(),
+        strides=(1, 1),
+        use_bias=False,
+        use_bn=True,
+        padding="same",
+        use_dropout=False,
+        kernel_size=(5, 5),
+    )
     x = upsample_block(
         x,
         128,
-        layers.LeakyReLU(0.2),
+        layers.ReLU(),
         strides=(1, 1),
         use_bias=False,
         use_bn=True,
         padding="same",
         use_dropout=False,
+        kernel_size=(5, 5),
     )
+
     x = upsample_block(
         x,
         64,
-        layers.LeakyReLU(0.2),
+        layers.ReLU(),
         strides=(1, 1),
         use_bias=False,
         use_bn=True,
         padding="same",
         use_dropout=False,
     )
+
+    x = upsample_block(
+        x,
+        32,
+        layers.ReLU(),
+        strides=(1, 1),
+        use_bias=False,
+        use_bn=True,
+        padding="same",
+        use_dropout=False,
+    )
+
+    x = upsample_block(
+        x,
+        16,
+        layers.ReLU(),
+        strides=(1, 1),
+        use_bias=False,
+        use_bn=True,
+        padding="same",
+        use_dropout=False,
+    )
+
     x = upsample_block(
         x, 1, layers.Activation("tanh"), strides=(1, 1), use_bias=False, use_bn=True
     )
@@ -278,7 +288,7 @@ class WGAN(keras.Model):
         generator,
         latent_dim,
         discriminator_extra_steps=3,
-        gp_weight=10.0,
+        gp_weight=10, # Penalty Coefficicent
     ):
         super(WGAN, self).__init__()
         self.discriminator = discriminator
@@ -398,7 +408,9 @@ class GANMonitor(keras.callbacks.Callback):
         for i in range(self.num_img):
             img = generated_images[i].numpy()
             img = keras.preprocessing.image.array_to_img(img)
-            img.save("output\\generated_img_{i}_{epoch}.png".format(i=i, epoch=epoch))
+            img.save("output\\{epoch}_heightmap_{i}.png".format(i=i, epoch=epoch))
+
+        self.model.generator.save("Generator.h5")
 
 """## Train the end-to-end model
 
@@ -428,17 +440,17 @@ def generator_loss(fake_img):
 
 
 # Set the number of epochs for trainining.
-epochs = 1
+epochs = 100
 
 # Instantiate the customer `GANMonitor` Keras callback.
-cbk = GANMonitor(num_img=10, latent_dim=noise_dim)
+cbk = GANMonitor(num_img=1, latent_dim=noise_dim)
 
 # Instantiate the WGAN model.
 wgan = WGAN(
     discriminator=d_model,
     generator=g_model,
     latent_dim=noise_dim,
-    discriminator_extra_steps=3,
+    discriminator_extra_steps=5,
 )
 
 # Compile the WGAN model.
