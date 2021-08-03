@@ -75,4 +75,19 @@ for path in paths:
     image_train = image[256:, 256:]
     counter += process_img(image_train, counter)
 
+    image_train = image[128:384, :256]
+    counter += process_img(image_train, counter)
+
+    image_train = image[128:384:, 256:]
+    counter += process_img(image_train, counter)
+
+    image_train = image[:256, 128:384]
+    counter += process_img(image_train, counter)
+
+    image_train = image[256:, 128:384]
+    counter += process_img(image_train, counter)
+
+    image_train = image[128:384, 128:384]
+    counter += process_img(image_train, counter)
+
 print("Images added: " + str(counter))

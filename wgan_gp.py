@@ -51,13 +51,13 @@ gpus = tf.config.experimental.list_physical_devices('GPU')
 tf.config.experimental.set_memory_growth(gpus[0], True)
 
 IMG_SHAPE = (256, 256, 1)
-BATCH_SIZE = 64
+BATCH_SIZE = 48
 
 # Size of the noise vector
 noise_dim = 128
 
 train_images = []
-for index in range(38216):
+for index in range(86176):
     image = cv2.imread("data\\img\\" + str(index) + ".png", cv2.IMREAD_GRAYSCALE)
     train_images.append(image)
 
@@ -127,9 +127,9 @@ def get_discriminator_model():
         kernel_size=(5, 5),
         strides=(2, 2),
         use_bn=False,
-        activation=layers.LeakyReLU(0.2),
         use_bias=True,
-        use_dropout=True,
+        activation=layers.LeakyReLU(0.2),
+        use_dropout=False,
         drop_value=0.3,
     )
     x = conv_block(
@@ -146,6 +146,17 @@ def get_discriminator_model():
     x = conv_block(
         x,
         256,
+        kernel_size=(5, 5),
+        strides=(2, 2),
+        use_bn=False,
+        activation=layers.LeakyReLU(0.2),
+        use_bias=True,
+        use_dropout=True,
+        drop_value=0.3,
+    )
+    x = conv_block(
+        x,
+        512,
         kernel_size=(5, 5),
         strides=(2, 2),
         use_bn=False,
@@ -200,11 +211,11 @@ def upsample_block(
 
 def get_generator_model():
     noise = layers.Input(shape=(noise_dim,))
-    x = layers.Dense(4 * 4 * 256, use_bias=False)(noise)
+    x = layers.Dense(4 * 4 * 512, use_bias=False)(noise)
     x = layers.BatchNormalization()(x)
     x = layers.ReLU()(x)
 
-    x = layers.Reshape((4, 4, 256))(x)
+    x = layers.Reshape((4, 4, 512))(x)
     x = upsample_block(
         x,
         256,
@@ -440,7 +451,7 @@ def generator_loss(fake_img):
 
 
 # Set the number of epochs for trainining.
-epochs = 100
+epochs = 200
 
 # Instantiate the customer `GANMonitor` Keras callback.
 cbk = GANMonitor(num_img=1, latent_dim=noise_dim)
