@@ -114,9 +114,9 @@ def get_discriminator_model():
     x = conv_block(
         img_input,
         32,
-        kernel_size=(5, 5),
+        kernel_size=(3, 3),
         strides=(2, 2),
-        use_bn=True,
+        use_bn=False,
         use_bias=True,
         activation=layers.LeakyReLU(0.2),
         use_dropout=True,
@@ -125,7 +125,7 @@ def get_discriminator_model():
     x = conv_block(
         x,
         64,
-        kernel_size=(5, 5),
+        kernel_size=(3, 3),
         strides=(2, 2),
         use_bn=True,
         use_bias=True,
@@ -136,7 +136,7 @@ def get_discriminator_model():
     x = conv_block(
         x,
         128,
-        kernel_size=(5, 5),
+        kernel_size=(3, 3),
         strides=(2, 2),
         use_bn=True,
         activation=layers.LeakyReLU(0.2),
@@ -160,7 +160,7 @@ def get_discriminator_model():
         512,
         kernel_size=(5, 5),
         strides=(2, 2),
-        use_bn=False,
+        use_bn=True,
         activation=layers.LeakyReLU(0.2),
         use_bias=True,
         use_dropout=False,
@@ -213,7 +213,7 @@ def upsample_block(
 def get_generator_model():
     noise = layers.Input(shape=(noise_dim,))
     x = layers.Dense(4 * 4 * 512, use_bias=False)(noise)
-    x = layers.BatchNormalization()(x)
+    # x = layers.BatchNormalization()(x)
     x = layers.LeakyReLU(0.2)(x)
 
     x = layers.Reshape((4, 4, 512))(x)
@@ -268,7 +268,7 @@ def get_generator_model():
         layers.LeakyReLU(0.2),
         strides=(1, 1),
         use_bias=False,
-        use_bn=False,
+        use_bn=True,
         padding="same",
         use_dropout=False,
     )
@@ -422,8 +422,9 @@ class GANMonitor(keras.callbacks.Callback):
             img = keras.preprocessing.image.array_to_img(img)
             img.save("output\\{epoch}_heightmap_{i}.png".format(i=i, epoch=epoch))
 
-        self.model.generator.save("Generator.h5")
-        self.model.discriminator.save("Discriminator.h5")
+        #self.model.generator.save("models\\Generator_{epoch}.h5".format(epoch=epoch))
+        self.model.generator.save("models\\Generator.h5")
+        self.model.discriminator.save("models\\Discriminator.h5")
 
 """## Train the end-to-end model
 
