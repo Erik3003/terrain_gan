@@ -51,13 +51,14 @@ gpus = tf.config.experimental.list_physical_devices('GPU')
 tf.config.experimental.set_memory_growth(gpus[0], True)
 
 IMG_SHAPE = (256, 256, 1)
-BATCH_SIZE = 48
+BATCH_SIZE = 24
 
 # Size of the noise vector
 noise_dim = 128
 
 train_images = []
-for index in range(86176):
+# 86176
+for index in range(512):
     image = cv2.imread("data\\img\\" + str(index) + ".png", cv2.IMREAD_GRAYSCALE)
     train_images.append(image)
 
@@ -99,7 +100,7 @@ def conv_block(
         filters, kernel_size, strides=strides, padding=padding, use_bias=use_bias
     )(x)
     if use_bn:
-        x = layers.BatchNormalization()(x)
+        x = layers.LayerNormalization()(x)
     x = activation(x)
     if use_dropout:
         x = layers.Dropout(drop_value)(x)
@@ -115,44 +116,44 @@ def get_discriminator_model():
         32,
         kernel_size=(5, 5),
         strides=(2, 2),
-        use_bn=False,
+        use_bn=True,
         use_bias=True,
         activation=layers.LeakyReLU(0.2),
-        use_dropout=False,
-        drop_value=0.3,
+        use_dropout=True,
+        drop_value=0.2,
     )
     x = conv_block(
         x,
         64,
         kernel_size=(5, 5),
         strides=(2, 2),
-        use_bn=False,
+        use_bn=True,
         use_bias=True,
         activation=layers.LeakyReLU(0.2),
-        use_dropout=False,
-        drop_value=0.3,
+        use_dropout=True,
+        drop_value=0.2,
     )
     x = conv_block(
         x,
         128,
         kernel_size=(5, 5),
         strides=(2, 2),
-        use_bn=False,
+        use_bn=True,
         activation=layers.LeakyReLU(0.2),
         use_bias=True,
         use_dropout=True,
-        drop_value=0.3,
+        drop_value=0.2,
     )
     x = conv_block(
         x,
         256,
         kernel_size=(5, 5),
         strides=(2, 2),
-        use_bn=False,
+        use_bn=True,
         activation=layers.LeakyReLU(0.2),
         use_bias=True,
         use_dropout=True,
-        drop_value=0.3,
+        drop_value=0.2,
     )
     x = conv_block(
         x,
@@ -163,7 +164,7 @@ def get_discriminator_model():
         activation=layers.LeakyReLU(0.2),
         use_bias=True,
         use_dropout=False,
-        drop_value=0.3,
+        drop_value=0.2,
     )
 
     x = layers.Flatten()(x)
@@ -213,13 +214,13 @@ def get_generator_model():
     noise = layers.Input(shape=(noise_dim,))
     x = layers.Dense(4 * 4 * 512, use_bias=False)(noise)
     x = layers.BatchNormalization()(x)
-    x = layers.ReLU()(x)
+    x = layers.LeakyReLU(0.2)(x)
 
     x = layers.Reshape((4, 4, 512))(x)
     x = upsample_block(
         x,
         256,
-        layers.ReLU(),
+        layers.LeakyReLU(0.2),
         strides=(1, 1),
         use_bias=False,
         use_bn=True,
@@ -230,7 +231,7 @@ def get_generator_model():
     x = upsample_block(
         x,
         128,
-        layers.ReLU(),
+        layers.LeakyReLU(0.2),
         strides=(1, 1),
         use_bias=False,
         use_bn=True,
@@ -242,7 +243,7 @@ def get_generator_model():
     x = upsample_block(
         x,
         64,
-        layers.ReLU(),
+        layers.LeakyReLU(0.2),
         strides=(1, 1),
         use_bias=False,
         use_bn=True,
@@ -253,7 +254,7 @@ def get_generator_model():
     x = upsample_block(
         x,
         32,
-        layers.ReLU(),
+        layers.LeakyReLU(0.2),
         strides=(1, 1),
         use_bias=False,
         use_bn=True,
@@ -264,10 +265,10 @@ def get_generator_model():
     x = upsample_block(
         x,
         16,
-        layers.ReLU(),
+        layers.LeakyReLU(0.2),
         strides=(1, 1),
         use_bias=False,
-        use_bn=True,
+        use_bn=False,
         padding="same",
         use_dropout=False,
     )
@@ -422,6 +423,7 @@ class GANMonitor(keras.callbacks.Callback):
             img.save("output\\{epoch}_heightmap_{i}.png".format(i=i, epoch=epoch))
 
         self.model.generator.save("Generator.h5")
+        self.model.discriminator.save("Discriminator.h5")
 
 """## Train the end-to-end model
 
