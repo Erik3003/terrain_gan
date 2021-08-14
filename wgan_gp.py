@@ -58,9 +58,17 @@ noise_dim = 128
 
 train_images = []
 # 86176
-for index in range(512):
-    image = cv2.imread("data\\img\\" + str(index) + ".png", cv2.IMREAD_GRAYSCALE)
+for index in range(1024):
+    image = cv2.imread("data\\out\\" + str(index) + ".png", cv2.IMREAD_GRAYSCALE)
     train_images.append(image)
+    train_images.append(cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE))
+    train_images.append(cv2.rotate(image, cv2.ROTATE_180))
+    train_images.append(cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE))
+    image = cv2.flip(image, 1)
+    train_images.append(image)
+    train_images.append(cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE))
+    train_images.append(cv2.rotate(image, cv2.ROTATE_180))
+    train_images.append(cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE))
 
 train_images = np.array(train_images, dtype="float32")
 train_images = train_images.reshape(train_images.shape[0], *IMG_SHAPE)
@@ -109,9 +117,44 @@ def conv_block(
 
 def get_discriminator_model():
     img_input = layers.Input(shape=IMG_SHAPE)
-    # Zero pad the input to make the input images size to (32, 32, 1).
-    # x = layers.ZeroPadding2D((2, 2))(img_input)
-    x = conv_block(
+
+    x = layers.Conv2D(16, (3, 3), padding="same", use_bias=True)(img_input)
+    x = layers.LeakyReLU(0.2)(x)
+    x = layers.Dropout(0.2)(x)
+    x = layers.AveragePooling2D()(x)
+
+    x = layers.Conv2D(32, (3, 3), padding="same", use_bias=True)(x)
+    x = layers.LayerNormalization()(x)
+    x = layers.LeakyReLU(0.2)(x)
+    x = layers.Dropout(0.2)(x)
+    x = layers.AveragePooling2D()(x)
+
+    x = layers.Conv2D(64, (3, 3), padding="same", use_bias=True)(x)
+    x = layers.LayerNormalization()(x)
+    x = layers.LeakyReLU(0.2)(x)
+    x = layers.Dropout(0.2)(x)
+    x = layers.AveragePooling2D()(x)
+
+    x = layers.Conv2D(128, (3, 3), padding="same", use_bias=True)(x)
+    x = layers.LayerNormalization()(x)
+    x = layers.LeakyReLU(0.2)(x)
+    x = layers.Dropout(0.2)(x)
+    x = layers.AveragePooling2D()(x)
+
+    x = layers.Conv2D(256, (5, 5), padding="same", use_bias=True)(x)
+    x = layers.LayerNormalization()(x)
+    x = layers.LeakyReLU(0.2)(x)
+    x = layers.Dropout(0.2)(x)
+    x = layers.AveragePooling2D()(x)
+
+    x = layers.Conv2D(512, (5, 5), padding="same", use_bias=True)(x)
+    x = layers.LayerNormalization()(x)
+    x = layers.LeakyReLU(0.2)(x)
+    x = layers.Dropout(0.2)(x)
+    x = layers.AveragePooling2D()(x)
+
+
+    """x = conv_block(
         img_input,
         32,
         kernel_size=(3, 3),
@@ -165,10 +208,11 @@ def get_discriminator_model():
         use_bias=True,
         use_dropout=False,
         drop_value=0.2,
-    )
+    )"""
 
     x = layers.Flatten()(x)
-    x = layers.Dropout(0.2)(x)
+    x = layers.Dense(128)(x)
+    x = layers.LeakyReLU(0.2)(x)
     x = layers.Dense(1)(x)
 
     d_model = keras.models.Model(img_input, x, name="discriminator")
@@ -214,10 +258,43 @@ def get_generator_model():
     noise = layers.Input(shape=(noise_dim,))
     x = layers.Dense(4 * 4 * 512, use_bias=False)(noise)
     # x = layers.BatchNormalization()(x)
-    x = layers.LeakyReLU(0.2)(x)
+    x = layers.Activation("relu")(x)
 
     x = layers.Reshape((4, 4, 512))(x)
-    x = upsample_block(
+
+    x = layers.Conv2D(256, (5, 5), padding="same", use_bias=False)(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Activation("relu")(x)
+    x = layers.UpSampling2D((2, 2))(x)
+
+    x = layers.Conv2D(128, (5, 5), padding="same", use_bias=False)(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Activation("relu")(x)
+    x = layers.UpSampling2D((2, 2))(x)
+
+    x = layers.Conv2D(64, (3, 3), padding="same", use_bias=False)(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Activation("relu")(x)
+    x = layers.UpSampling2D((2, 2))(x)
+
+    x = layers.Conv2D(32, (3, 3), padding="same", use_bias=False)(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Activation("relu")(x)
+    x = layers.UpSampling2D((2, 2))(x)
+
+    x = layers.Conv2D(16, (3, 3), padding="same", use_bias=False)(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Activation("relu")(x)
+    x = layers.UpSampling2D((2, 2))(x)
+
+    x = layers.Conv2D(8, (3, 3), padding="same", use_bias=False)(x)
+    x = layers.Activation("relu")(x)
+    x = layers.UpSampling2D((2, 2))(x)
+
+    x = layers.Conv2D(1, (3, 3), padding="same", use_bias=False)(x)
+    x = layers.Activation("tanh")(x)
+
+    """x = upsample_block(
         x,
         256,
         layers.LeakyReLU(0.2),
@@ -275,10 +352,7 @@ def get_generator_model():
 
     x = upsample_block(
         x, 1, layers.Activation("tanh"), strides=(1, 1), use_bias=False, use_bn=True
-    )
-    # At this point, we have an output which has the same shape as the input, (32, 32, 1).
-    # We will use a Cropping2D layer to make it (28, 28, 1).
-    #x = layers.Cropping2D((2, 2))(x)
+    )"""
 
     g_model = keras.models.Model(noise, x, name="generator")
     return g_model
@@ -411,10 +485,10 @@ class GANMonitor(keras.callbacks.Callback):
     def __init__(self, num_img=6, latent_dim=128):
         self.num_img = num_img
         self.latent_dim = latent_dim
+        self.random_latent_vectors = tf.random.normal(shape=(self.num_img, self.latent_dim), seed=3342934)
 
     def on_epoch_end(self, epoch, logs=None):
-        random_latent_vectors = tf.random.normal(shape=(self.num_img, self.latent_dim))
-        generated_images = self.model.generator(random_latent_vectors)
+        generated_images = self.model.generator(self.random_latent_vectors)
         generated_images = (generated_images * 127.5) + 127.5
 
         for i in range(self.num_img):
@@ -422,8 +496,7 @@ class GANMonitor(keras.callbacks.Callback):
             img = keras.preprocessing.image.array_to_img(img)
             img.save("output\\{epoch}_heightmap_{i}.png".format(i=i, epoch=epoch))
 
-        #self.model.generator.save("models\\Generator_{epoch}.h5".format(epoch=epoch))
-        self.model.generator.save("models\\Generator.h5")
+        self.model.generator.save("models\\Generator_{epoch}.h5".format(epoch=epoch))
         self.model.discriminator.save("models\\Discriminator.h5")
 
 """## Train the end-to-end model
@@ -457,7 +530,7 @@ def generator_loss(fake_img):
 epochs = 200
 
 # Instantiate the customer `GANMonitor` Keras callback.
-cbk = GANMonitor(num_img=1, latent_dim=noise_dim)
+cbk = GANMonitor(num_img=6, latent_dim=noise_dim)
 
 # Instantiate the WGAN model.
 wgan = WGAN(
