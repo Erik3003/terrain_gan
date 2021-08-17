@@ -52,10 +52,10 @@ tf.config.experimental.set_memory_growth(gpus[0], True)
 
 IMG_SHAPE = (256, 256, 1)
 BATCH_SIZE = 24
-FILTER_DEPTH = 512
+FILTER_DEPTH = 8
 
 # Size of the noise vector
-noise_dim = 4096
+noise_dim = 512
 
 train_images = []
 # 86176
@@ -96,44 +96,50 @@ for each sample; and
 def get_discriminator_model():
     img_input = layers.Input(shape=IMG_SHAPE)
 
-    x = layers.Conv2D(FILTER_DEPTH/32, (3, 3), padding="same", use_bias=True)(img_input)
+    x = layers.Conv2D(1, (1, 1), strides=1, padding="same", use_bias=True)(img_input)
     x = layers.LeakyReLU(0.2)(x)
     x = layers.Dropout(0.2)(x)
-    x = layers.AveragePooling2D()(x)
 
-    x = layers.Conv2D(FILTER_DEPTH/16, (3, 3), padding="same", use_bias=True)(x)
+    x = layers.Conv2D(FILTER_DEPTH, (5, 5), strides=1, padding="same", use_bias=True)(x)
     x = layers.LayerNormalization()(x)
     x = layers.LeakyReLU(0.2)(x)
     x = layers.Dropout(0.2)(x)
-    x = layers.AveragePooling2D()(x)
 
-    x = layers.Conv2D(FILTER_DEPTH/8, (3, 3), padding="same", use_bias=True)(x)
+    x = layers.Conv2D(FILTER_DEPTH * 2, (5, 5), strides=2, padding="same", use_bias=True)(x)
     x = layers.LayerNormalization()(x)
     x = layers.LeakyReLU(0.2)(x)
     x = layers.Dropout(0.2)(x)
-    x = layers.AveragePooling2D()(x)
 
-    x = layers.Conv2D(FILTER_DEPTH/4, (3, 3), padding="same", use_bias=True)(x)
+    x = layers.Conv2D(FILTER_DEPTH * 4, (5, 5), strides=2, padding="same", use_bias=True)(x)
     x = layers.LayerNormalization()(x)
     x = layers.LeakyReLU(0.2)(x)
     x = layers.Dropout(0.2)(x)
-    x = layers.AveragePooling2D()(x)
 
-    x = layers.Conv2D(FILTER_DEPTH/2, (5, 5), padding="same", use_bias=True)(x)
+    x = layers.Conv2D(FILTER_DEPTH * 8, (5, 5), strides=2, padding="same", use_bias=True)(x)
     x = layers.LayerNormalization()(x)
     x = layers.LeakyReLU(0.2)(x)
     x = layers.Dropout(0.2)(x)
-    x = layers.AveragePooling2D()(x)
 
-    x = layers.Conv2D(FILTER_DEPTH, (5, 5), padding="same", use_bias=True)(x)
+    x = layers.Conv2D(FILTER_DEPTH * 16, (5, 5), strides=2, padding="same", use_bias=True)(x)
     x = layers.LayerNormalization()(x)
     x = layers.LeakyReLU(0.2)(x)
     x = layers.Dropout(0.2)(x)
-    x = layers.AveragePooling2D()(x)
 
-    x = layers.Flatten()(x)
-    x = layers.Dense(128)(x)
+    x = layers.Conv2D(FILTER_DEPTH * 32, (5, 5), strides=2, padding="same", use_bias=True)(x)
+    x = layers.LayerNormalization()(x)
     x = layers.LeakyReLU(0.2)(x)
+    x = layers.Dropout(0.2)(x)
+
+    x = layers.Conv2D(FILTER_DEPTH * 64, (5, 5), strides=2, padding="same", use_bias=True)(x)
+    x = layers.LayerNormalization()(x)
+    x = layers.LeakyReLU(0.2)(x)
+    x = layers.Dropout(0.2)(x)
+
+    x = layers.Conv2D(FILTER_DEPTH * 64, (5, 5), strides=4, padding="same", use_bias=True)(x)
+    x = layers.LayerNormalization()(x)
+    x = layers.LeakyReLU(0.2)(x)
+    x = layers.Dropout(0.2)(x)
+
     x = layers.Dense(1)(x)
 
     d_model = keras.models.Model(img_input, x, name="discriminator")
@@ -150,47 +156,37 @@ d_model.summary()
 
 def get_generator_model():
     noise = layers.Input(shape=(noise_dim,))
-    #x = layers.Dense(4 * 4 * FILTER_DEPTH, use_bias=False)(noise)
+    x = layers.Reshape((1, 1, FILTER_DEPTH * 64))(noise)
 
-    x = layers.Reshape((1, 1, noise_dim))(noise)
-
-    # 1x1x4096
-    x = layers.Conv2DTranspose(filters=FILTER_DEPTH/2, kernel_size=4)(x)
-    # x = layers.BatchNormalization()(x)
-    x = layers.Activation("relu")(x)
-
-    #x = layers.Reshape((4, 4, FILTER_DEPTH))(x)
-
-    x = layers.Conv2D(FILTER_DEPTH/2, (4, 4), padding="same", use_bias=False)(x)
+    x = layers.Conv2DTranspose(filters=FILTER_DEPTH * 64, kernel_size=5, strides=4, padding="same")(x)
     x = layers.BatchNormalization(momentum=0.8)(x)
     x = layers.Activation("relu")(x)
-    x = layers.UpSampling2D((2, 2))(x)
 
-    x = layers.Conv2D(FILTER_DEPTH/4, (3, 3), padding="same", use_bias=False)(x)
+    x = layers.Conv2DTranspose(filters=FILTER_DEPTH * 32, kernel_size=5, strides=2, padding="same")(x)
     x = layers.BatchNormalization(momentum=0.8)(x)
     x = layers.Activation("relu")(x)
-    x = layers.UpSampling2D((2, 2))(x)
 
-    x = layers.Conv2D(FILTER_DEPTH/8, (3, 3), padding="same", use_bias=False)(x)
+    x = layers.Conv2DTranspose(filters=FILTER_DEPTH * 16, kernel_size=5, strides=2, padding="same")(x)
     x = layers.BatchNormalization(momentum=0.8)(x)
     x = layers.Activation("relu")(x)
-    x = layers.UpSampling2D((2, 2))(x)
 
-    x = layers.Conv2D(FILTER_DEPTH/16, (3, 3), padding="same", use_bias=False)(x)
+    x = layers.Conv2DTranspose(filters=FILTER_DEPTH * 8, kernel_size=5, strides=2, padding="same")(x)
     x = layers.BatchNormalization(momentum=0.8)(x)
     x = layers.Activation("relu")(x)
-    x = layers.UpSampling2D((2, 2))(x)
 
-    x = layers.Conv2D(FILTER_DEPTH/32, (3, 3), padding="same", use_bias=False)(x)
+    x = layers.Conv2DTranspose(filters=FILTER_DEPTH * 4, kernel_size=5, strides=2, padding="same")(x)
     x = layers.BatchNormalization(momentum=0.8)(x)
     x = layers.Activation("relu")(x)
-    x = layers.UpSampling2D((2, 2))(x)
 
-    x = layers.Conv2D(FILTER_DEPTH / 64, (3, 3), padding="same", use_bias=False)(x)
+    x = layers.Conv2DTranspose(filters=FILTER_DEPTH * 2, kernel_size=5, strides=2, padding="same")(x)
+    x = layers.BatchNormalization(momentum=0.8)(x)
     x = layers.Activation("relu")(x)
-    x = layers.UpSampling2D((2, 2))(x)
 
-    x = layers.Conv2D(1, (3, 3), padding="same", use_bias=False)(x)
+    x = layers.Conv2DTranspose(filters=FILTER_DEPTH, kernel_size=5, strides=2, padding="same")(x)
+    x = layers.BatchNormalization(momentum=0.8)(x)
+    x = layers.Activation("relu")(x)
+
+    x = layers.Conv2DTranspose(filters=1, kernel_size=5, strides=1, padding="same")(x)
     x = layers.Activation("tanh")(x)
 
     g_model = keras.models.Model(noise, x, name="generator")
