@@ -52,9 +52,10 @@ tf.config.experimental.set_memory_growth(gpus[0], True)
 
 IMG_SHAPE = (256, 256, 1)
 BATCH_SIZE = 24
+FILTER_DEPTH = 512
 
 # Size of the noise vector
-noise_dim = 128
+noise_dim = 4096
 
 train_images = []
 # 86176
@@ -92,123 +93,43 @@ for each sample; and
 - Ihe generator: crop the final output to match the shape with input shape.
 """
 
-def conv_block(
-    x,
-    filters,
-    activation,
-    kernel_size=(3, 3),
-    strides=(1, 1),
-    padding="same",
-    use_bias=True,
-    use_bn=False,
-    use_dropout=False,
-    drop_value=0.5,
-):
-    x = layers.Conv2D(
-        filters, kernel_size, strides=strides, padding=padding, use_bias=use_bias
-    )(x)
-    if use_bn:
-        x = layers.LayerNormalization()(x)
-    x = activation(x)
-    if use_dropout:
-        x = layers.Dropout(drop_value)(x)
-    return x
-
-
 def get_discriminator_model():
     img_input = layers.Input(shape=IMG_SHAPE)
 
-    x = layers.Conv2D(16, (3, 3), padding="same", use_bias=True)(img_input)
+    x = layers.Conv2D(FILTER_DEPTH/32, (3, 3), padding="same", use_bias=True)(img_input)
     x = layers.LeakyReLU(0.2)(x)
     x = layers.Dropout(0.2)(x)
     x = layers.AveragePooling2D()(x)
 
-    x = layers.Conv2D(32, (3, 3), padding="same", use_bias=True)(x)
+    x = layers.Conv2D(FILTER_DEPTH/16, (3, 3), padding="same", use_bias=True)(x)
     x = layers.LayerNormalization()(x)
     x = layers.LeakyReLU(0.2)(x)
     x = layers.Dropout(0.2)(x)
     x = layers.AveragePooling2D()(x)
 
-    x = layers.Conv2D(64, (3, 3), padding="same", use_bias=True)(x)
+    x = layers.Conv2D(FILTER_DEPTH/8, (3, 3), padding="same", use_bias=True)(x)
     x = layers.LayerNormalization()(x)
     x = layers.LeakyReLU(0.2)(x)
     x = layers.Dropout(0.2)(x)
     x = layers.AveragePooling2D()(x)
 
-    x = layers.Conv2D(128, (3, 3), padding="same", use_bias=True)(x)
+    x = layers.Conv2D(FILTER_DEPTH/4, (3, 3), padding="same", use_bias=True)(x)
     x = layers.LayerNormalization()(x)
     x = layers.LeakyReLU(0.2)(x)
     x = layers.Dropout(0.2)(x)
     x = layers.AveragePooling2D()(x)
 
-    x = layers.Conv2D(256, (5, 5), padding="same", use_bias=True)(x)
+    x = layers.Conv2D(FILTER_DEPTH/2, (5, 5), padding="same", use_bias=True)(x)
     x = layers.LayerNormalization()(x)
     x = layers.LeakyReLU(0.2)(x)
     x = layers.Dropout(0.2)(x)
     x = layers.AveragePooling2D()(x)
 
-    x = layers.Conv2D(512, (5, 5), padding="same", use_bias=True)(x)
+    x = layers.Conv2D(FILTER_DEPTH, (5, 5), padding="same", use_bias=True)(x)
     x = layers.LayerNormalization()(x)
     x = layers.LeakyReLU(0.2)(x)
     x = layers.Dropout(0.2)(x)
     x = layers.AveragePooling2D()(x)
-
-
-    """x = conv_block(
-        img_input,
-        32,
-        kernel_size=(3, 3),
-        strides=(2, 2),
-        use_bn=False,
-        use_bias=True,
-        activation=layers.LeakyReLU(0.2),
-        use_dropout=True,
-        drop_value=0.2,
-    )
-    x = conv_block(
-        x,
-        64,
-        kernel_size=(3, 3),
-        strides=(2, 2),
-        use_bn=True,
-        use_bias=True,
-        activation=layers.LeakyReLU(0.2),
-        use_dropout=True,
-        drop_value=0.2,
-    )
-    x = conv_block(
-        x,
-        128,
-        kernel_size=(3, 3),
-        strides=(2, 2),
-        use_bn=True,
-        activation=layers.LeakyReLU(0.2),
-        use_bias=True,
-        use_dropout=True,
-        drop_value=0.2,
-    )
-    x = conv_block(
-        x,
-        256,
-        kernel_size=(5, 5),
-        strides=(2, 2),
-        use_bn=True,
-        activation=layers.LeakyReLU(0.2),
-        use_bias=True,
-        use_dropout=True,
-        drop_value=0.2,
-    )
-    x = conv_block(
-        x,
-        512,
-        kernel_size=(5, 5),
-        strides=(2, 2),
-        use_bn=True,
-        activation=layers.LeakyReLU(0.2),
-        use_bias=True,
-        use_dropout=False,
-        drop_value=0.2,
-    )"""
 
     x = layers.Flatten()(x)
     x = layers.Dense(128)(x)
@@ -226,133 +147,51 @@ d_model.summary()
 
 """
 
-def upsample_block(
-    x,
-    filters,
-    activation,
-    kernel_size=(3, 3),
-    strides=(1, 1),
-    up_size=(2, 2),
-    padding="same",
-    use_bn=False,
-    use_bias=True,
-    use_dropout=False,
-    drop_value=0.3,
-):
-    x = layers.UpSampling2D(up_size)(x)
-    x = layers.Conv2D(
-        filters, kernel_size, strides=strides, padding=padding, use_bias=use_bias
-    )(x)
-
-    if use_bn:
-        x = layers.BatchNormalization()(x)
-
-    if activation:
-        x = activation(x)
-    if use_dropout:
-        x = layers.Dropout(drop_value)(x)
-    return x
-
 
 def get_generator_model():
     noise = layers.Input(shape=(noise_dim,))
-    x = layers.Dense(4 * 4 * 512, use_bias=False)(noise)
+    #x = layers.Dense(4 * 4 * FILTER_DEPTH, use_bias=False)(noise)
+
+    x = layers.Reshape((1, 1, noise_dim))(noise)
+
+    # 1x1x4096
+    x = layers.Conv2DTranspose(filters=FILTER_DEPTH/2, kernel_size=4)(x)
     # x = layers.BatchNormalization()(x)
     x = layers.Activation("relu")(x)
 
-    x = layers.Reshape((4, 4, 512))(x)
+    #x = layers.Reshape((4, 4, FILTER_DEPTH))(x)
 
-    x = layers.Conv2D(256, (5, 5), padding="same", use_bias=False)(x)
-    x = layers.BatchNormalization()(x)
+    x = layers.Conv2D(FILTER_DEPTH/2, (4, 4), padding="same", use_bias=False)(x)
+    x = layers.BatchNormalization(momentum=0.8)(x)
     x = layers.Activation("relu")(x)
     x = layers.UpSampling2D((2, 2))(x)
 
-    x = layers.Conv2D(128, (5, 5), padding="same", use_bias=False)(x)
-    x = layers.BatchNormalization()(x)
+    x = layers.Conv2D(FILTER_DEPTH/4, (3, 3), padding="same", use_bias=False)(x)
+    x = layers.BatchNormalization(momentum=0.8)(x)
     x = layers.Activation("relu")(x)
     x = layers.UpSampling2D((2, 2))(x)
 
-    x = layers.Conv2D(64, (3, 3), padding="same", use_bias=False)(x)
-    x = layers.BatchNormalization()(x)
+    x = layers.Conv2D(FILTER_DEPTH/8, (3, 3), padding="same", use_bias=False)(x)
+    x = layers.BatchNormalization(momentum=0.8)(x)
     x = layers.Activation("relu")(x)
     x = layers.UpSampling2D((2, 2))(x)
 
-    x = layers.Conv2D(32, (3, 3), padding="same", use_bias=False)(x)
-    x = layers.BatchNormalization()(x)
+    x = layers.Conv2D(FILTER_DEPTH/16, (3, 3), padding="same", use_bias=False)(x)
+    x = layers.BatchNormalization(momentum=0.8)(x)
     x = layers.Activation("relu")(x)
     x = layers.UpSampling2D((2, 2))(x)
 
-    x = layers.Conv2D(16, (3, 3), padding="same", use_bias=False)(x)
-    x = layers.BatchNormalization()(x)
+    x = layers.Conv2D(FILTER_DEPTH/32, (3, 3), padding="same", use_bias=False)(x)
+    x = layers.BatchNormalization(momentum=0.8)(x)
     x = layers.Activation("relu")(x)
     x = layers.UpSampling2D((2, 2))(x)
 
-    x = layers.Conv2D(8, (3, 3), padding="same", use_bias=False)(x)
+    x = layers.Conv2D(FILTER_DEPTH / 64, (3, 3), padding="same", use_bias=False)(x)
     x = layers.Activation("relu")(x)
     x = layers.UpSampling2D((2, 2))(x)
 
     x = layers.Conv2D(1, (3, 3), padding="same", use_bias=False)(x)
     x = layers.Activation("tanh")(x)
-
-    """x = upsample_block(
-        x,
-        256,
-        layers.LeakyReLU(0.2),
-        strides=(1, 1),
-        use_bias=False,
-        use_bn=True,
-        padding="same",
-        use_dropout=False,
-        kernel_size=(5, 5),
-    )
-    x = upsample_block(
-        x,
-        128,
-        layers.LeakyReLU(0.2),
-        strides=(1, 1),
-        use_bias=False,
-        use_bn=True,
-        padding="same",
-        use_dropout=False,
-        kernel_size=(5, 5),
-    )
-
-    x = upsample_block(
-        x,
-        64,
-        layers.LeakyReLU(0.2),
-        strides=(1, 1),
-        use_bias=False,
-        use_bn=True,
-        padding="same",
-        use_dropout=False,
-    )
-
-    x = upsample_block(
-        x,
-        32,
-        layers.LeakyReLU(0.2),
-        strides=(1, 1),
-        use_bias=False,
-        use_bn=True,
-        padding="same",
-        use_dropout=False,
-    )
-
-    x = upsample_block(
-        x,
-        16,
-        layers.LeakyReLU(0.2),
-        strides=(1, 1),
-        use_bias=False,
-        use_bn=True,
-        padding="same",
-        use_dropout=False,
-    )
-
-    x = upsample_block(
-        x, 1, layers.Activation("tanh"), strides=(1, 1), use_bias=False, use_bn=True
-    )"""
 
     g_model = keras.models.Model(noise, x, name="generator")
     return g_model
