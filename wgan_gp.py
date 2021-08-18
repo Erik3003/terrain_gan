@@ -51,11 +51,11 @@ gpus = tf.config.experimental.list_physical_devices('GPU')
 tf.config.experimental.set_memory_growth(gpus[0], True)
 
 IMG_SHAPE = (256, 256, 1)
-BATCH_SIZE = 24
-FILTER_DEPTH = 8
+BATCH_SIZE = 16
+FILTER_DEPTH = 4
 
 # Size of the noise vector
-noise_dim = 512
+noise_dim = 256
 
 train_images = []
 # 86176
@@ -93,52 +93,34 @@ for each sample; and
 - Ihe generator: crop the final output to match the shape with input shape.
 """
 
+
+def conv_block(x, depth, strides, kernel_size, depth_multiplier=2):
+    x = layers.Conv2D(FILTER_DEPTH * depth, kernel_size=3, strides=1, padding="same", use_bias=True)(x)
+    #x = layers.LayerNormalization()(x)
+    x = layers.LeakyReLU(0.2)(x)
+    #x = layers.Dropout(0.2)(x)
+    x = layers.Conv2D(FILTER_DEPTH * depth * depth_multiplier, kernel_size=kernel_size, strides=1, padding="same", use_bias=True)(x)
+    x# = layers.LayerNormalization()(x)
+    x = layers.LeakyReLU(0.2)(x)
+    #x = layers.Dropout(0.2)(x)
+    x = layers.AveragePooling2D(strides)(x)
+    return x
+
+
 def get_discriminator_model():
     img_input = layers.Input(shape=IMG_SHAPE)
 
-    x = layers.Conv2D(1, (1, 1), strides=1, padding="same", use_bias=True)(img_input)
+    x = layers.Conv2D(FILTER_DEPTH * 4, kernel_size=1, strides=1, padding="same", use_bias=True)(img_input)
     x = layers.LeakyReLU(0.2)(x)
-    x = layers.Dropout(0.2)(x)
+    #x = layers.Dropout(0.2)(x)
 
-    x = layers.Conv2D(FILTER_DEPTH, (5, 5), strides=1, padding="same", use_bias=True)(x)
-    x = layers.LayerNormalization()(x)
-    x = layers.LeakyReLU(0.2)(x)
-    x = layers.Dropout(0.2)(x)
-
-    x = layers.Conv2D(FILTER_DEPTH * 2, (5, 5), strides=2, padding="same", use_bias=True)(x)
-    x = layers.LayerNormalization()(x)
-    x = layers.LeakyReLU(0.2)(x)
-    x = layers.Dropout(0.2)(x)
-
-    x = layers.Conv2D(FILTER_DEPTH * 4, (5, 5), strides=2, padding="same", use_bias=True)(x)
-    x = layers.LayerNormalization()(x)
-    x = layers.LeakyReLU(0.2)(x)
-    x = layers.Dropout(0.2)(x)
-
-    x = layers.Conv2D(FILTER_DEPTH * 8, (5, 5), strides=2, padding="same", use_bias=True)(x)
-    x = layers.LayerNormalization()(x)
-    x = layers.LeakyReLU(0.2)(x)
-    x = layers.Dropout(0.2)(x)
-
-    x = layers.Conv2D(FILTER_DEPTH * 16, (5, 5), strides=2, padding="same", use_bias=True)(x)
-    x = layers.LayerNormalization()(x)
-    x = layers.LeakyReLU(0.2)(x)
-    x = layers.Dropout(0.2)(x)
-
-    x = layers.Conv2D(FILTER_DEPTH * 32, (5, 5), strides=2, padding="same", use_bias=True)(x)
-    x = layers.LayerNormalization()(x)
-    x = layers.LeakyReLU(0.2)(x)
-    x = layers.Dropout(0.2)(x)
-
-    x = layers.Conv2D(FILTER_DEPTH * 64, (5, 5), strides=2, padding="same", use_bias=True)(x)
-    x = layers.LayerNormalization()(x)
-    x = layers.LeakyReLU(0.2)(x)
-    x = layers.Dropout(0.2)(x)
-
-    x = layers.Conv2D(FILTER_DEPTH * 64, (5, 5), strides=4, padding="same", use_bias=True)(x)
-    x = layers.LayerNormalization()(x)
-    x = layers.LeakyReLU(0.2)(x)
-    x = layers.Dropout(0.2)(x)
+    x = conv_block(x, 4, 2, 3)
+    x = conv_block(x, 8, 2, 3)
+    x = conv_block(x, 16, 2, 3)
+    x = conv_block(x, 32, 2, 3)
+    x = conv_block(x, 64, 2, 3, 1)
+    x = conv_block(x, 64, 2, 3, 1)
+    x = conv_block(x, 64, 4, 4, 1)
 
     x = layers.Dense(1)(x)
 
@@ -154,40 +136,33 @@ d_model.summary()
 """
 
 
+def deconv_block(x, depth, strides, kernel_size):
+    x = layers.UpSampling2D(strides)(x)
+    x = layers.Conv2D(filters=FILTER_DEPTH * depth, kernel_size=kernel_size, strides=1, padding="same")(x)
+    #x = layers.BatchNormalization(momentum=0.8)(x)
+    x = layers.LeakyReLU(0.2)(x)
+    #x = layers.Activation("relu")(x)
+    x = layers.Conv2D(filters=FILTER_DEPTH * depth, kernel_size=3, strides=1, padding="same")(x)
+    #x = layers.BatchNormalization(momentum=0.8)(x)
+    x = layers.LeakyReLU(0.2)(x)
+    #x = layers.Activation("relu")(x)
+    return x
+
+
 def get_generator_model():
     noise = layers.Input(shape=(noise_dim,))
     x = layers.Reshape((1, 1, FILTER_DEPTH * 64))(noise)
 
-    x = layers.Conv2DTranspose(filters=FILTER_DEPTH * 64, kernel_size=5, strides=4, padding="same")(x)
-    x = layers.BatchNormalization(momentum=0.8)(x)
-    x = layers.Activation("relu")(x)
+    x = deconv_block(x, 64, 4, 4)
+    x = deconv_block(x, 64, 2, 3)
+    x = deconv_block(x, 64, 2, 3)
+    x = deconv_block(x, 32, 2, 3)
+    x = deconv_block(x, 16, 2, 3)
+    x = deconv_block(x, 8, 2, 3)
+    x = deconv_block(x, 4, 2, 3)
 
-    x = layers.Conv2DTranspose(filters=FILTER_DEPTH * 32, kernel_size=5, strides=2, padding="same")(x)
-    x = layers.BatchNormalization(momentum=0.8)(x)
-    x = layers.Activation("relu")(x)
-
-    x = layers.Conv2DTranspose(filters=FILTER_DEPTH * 16, kernel_size=5, strides=2, padding="same")(x)
-    x = layers.BatchNormalization(momentum=0.8)(x)
-    x = layers.Activation("relu")(x)
-
-    x = layers.Conv2DTranspose(filters=FILTER_DEPTH * 8, kernel_size=5, strides=2, padding="same")(x)
-    x = layers.BatchNormalization(momentum=0.8)(x)
-    x = layers.Activation("relu")(x)
-
-    x = layers.Conv2DTranspose(filters=FILTER_DEPTH * 4, kernel_size=5, strides=2, padding="same")(x)
-    x = layers.BatchNormalization(momentum=0.8)(x)
-    x = layers.Activation("relu")(x)
-
-    x = layers.Conv2DTranspose(filters=FILTER_DEPTH * 2, kernel_size=5, strides=2, padding="same")(x)
-    x = layers.BatchNormalization(momentum=0.8)(x)
-    x = layers.Activation("relu")(x)
-
-    x = layers.Conv2DTranspose(filters=FILTER_DEPTH, kernel_size=5, strides=2, padding="same")(x)
-    x = layers.BatchNormalization(momentum=0.8)(x)
-    x = layers.Activation("relu")(x)
-
-    x = layers.Conv2DTranspose(filters=1, kernel_size=5, strides=1, padding="same")(x)
-    x = layers.Activation("tanh")(x)
+    x = layers.Conv2D(filters=1, kernel_size=1, strides=1, padding="same")(x)
+    x = layers.Activation("linear")(x)
 
     g_model = keras.models.Model(noise, x, name="generator")
     return g_model
