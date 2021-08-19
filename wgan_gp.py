@@ -47,8 +47,8 @@ sample in this dataset is a 28x28 grayscale image associated with a label from
 10 classes (e.g. trouser, pullover, sneaker, etc.)
 """
 
-# gpus = tf.config.experimental.list_physical_devices('GPU')
-# tf.config.experimental.set_memory_growth(gpus[0], True)
+gpus = tf.config.experimental.list_physical_devices('GPU')
+tf.config.experimental.set_memory_growth(gpus[0], True)
 
 IMG_SHAPE = (256, 256, 1)
 BATCH_SIZE = 16
