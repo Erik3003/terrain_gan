@@ -47,8 +47,8 @@ sample in this dataset is a 28x28 grayscale image associated with a label from
 10 classes (e.g. trouser, pullover, sneaker, etc.)
 """
 
-gpus = tf.config.experimental.list_physical_devices('GPU')
-tf.config.experimental.set_memory_growth(gpus[0], True)
+# gpus = tf.config.experimental.list_physical_devices('GPU')
+# tf.config.experimental.set_memory_growth(gpus[0], True)
 
 IMG_SHAPE = (256, 256, 1)
 BATCH_SIZE = 16
@@ -93,18 +93,21 @@ for each sample; and
 - Ihe generator: crop the final output to match the shape with input shape.
 """
 
+
 def pixel_norm(x, epsilon=1e-8):
     return x * tf.math.rsqrt(tf.reduce_mean(tf.square(x), axis=1, keepdims=True) + epsilon)
 
+
 def conv_block(x, depth, strides, kernel_size, depth_multiplier=2):
     x = layers.Conv2D(FILTER_DEPTH * depth, kernel_size=3, strides=1, padding="same", use_bias=True)(x)
-    #x = layers.LayerNormalization()(x)
+    # x = layers.LayerNormalization()(x)
     x = layers.LeakyReLU(0.2)(x)
-    #x = layers.Dropout(0.2)(x)
-    x = layers.Conv2D(FILTER_DEPTH * depth * depth_multiplier, kernel_size=kernel_size, strides=1, padding="same", use_bias=True)(x)
-    x# = layers.LayerNormalization()(x)
+    # x = layers.Dropout(0.2)(x)
+    x = layers.Conv2D(FILTER_DEPTH * depth * depth_multiplier, kernel_size=kernel_size, strides=1, padding="same",
+                      use_bias=True)(x)
+    x  # = layers.LayerNormalization()(x)
     x = layers.LeakyReLU(0.2)(x)
-    #x = layers.Dropout(0.2)(x)
+    # x = layers.Dropout(0.2)(x)
     x = layers.AveragePooling2D(strides)(x)
     return x
 
@@ -114,7 +117,7 @@ def get_discriminator_model():
 
     x = layers.Conv2D(FILTER_DEPTH * 4, kernel_size=1, strides=1, padding="same", use_bias=True)(img_input)
     x = layers.LeakyReLU(0.2)(x)
-    #x = layers.Dropout(0.2)(x)
+    # x = layers.Dropout(0.2)(x)
 
     x = conv_block(x, 4, 2, 3)
     x = conv_block(x, 8, 2, 3)
@@ -130,8 +133,9 @@ def get_discriminator_model():
     return d_model
 
 
-d_model = get_discriminator_model()
-d_model.summary()
+if __name__ == "__main__":
+    d_model = get_discriminator_model()
+    d_model.summary()
 
 """## Create the generator
 
@@ -141,15 +145,15 @@ d_model.summary()
 def deconv_block(x, depth, strides, kernel_size):
     x = layers.UpSampling2D(strides)(x)
     x = layers.Conv2D(filters=FILTER_DEPTH * depth, kernel_size=kernel_size, strides=1, padding="same")(x)
-    #x = layers.BatchNormalization(momentum=0.8)(x)
+    # x = layers.BatchNormalization(momentum=0.8)(x)
     x = layers.LeakyReLU(0.2)(x)
     x = pixel_norm(x)
-    #x = layers.Activation("relu")(x)
+    # x = layers.Activation("relu")(x)
     x = layers.Conv2D(filters=FILTER_DEPTH * depth, kernel_size=3, strides=1, padding="same")(x)
-    #x = layers.BatchNormalization(momentum=0.8)(x)
+    # x = layers.BatchNormalization(momentum=0.8)(x)
     x = layers.LeakyReLU(0.2)(x)
     x = pixel_norm(x)
-    #x = layers.Activation("relu")(x)
+    # x = layers.Activation("relu")(x)
     return x
 
 
@@ -172,8 +176,9 @@ def get_generator_model():
     return g_model
 
 
-g_model = get_generator_model()
-g_model.summary()
+if __name__ == "__main__":
+    g_model = get_generator_model()
+    g_model.summary()
 
 """## Create the WGAN-GP model
 
@@ -181,14 +186,15 @@ Now that we have defined our generator and discriminator, it's time to implement
 the WGAN-GP model. We will also override the `train_step` for training.
 """
 
+
 class WGAN(keras.Model):
     def __init__(
-        self,
-        discriminator,
-        generator,
-        latent_dim,
-        discriminator_extra_steps=3,
-        gp_weight=10, # Penalty Coefficicent
+            self,
+            discriminator,
+            generator,
+            latent_dim,
+            discriminator_extra_steps=3,
+            gp_weight=10,  # Penalty Coefficicent
     ):
         super(WGAN, self).__init__()
         self.discriminator = discriminator
@@ -295,7 +301,9 @@ class WGAN(keras.Model):
         )
         return {"d_loss": d_loss, "g_loss": g_loss}
 
+
 """## Create a Keras callback that periodically saves generated images"""
+
 
 class GANMonitor(keras.callbacks.Callback):
     def __init__(self, num_img=6, latent_dim=128):
@@ -315,6 +323,7 @@ class GANMonitor(keras.callbacks.Callback):
         self.model.generator.save("models\\Generator_{epoch}.h5".format(epoch=epoch))
         self.model.discriminator.save("models\\Discriminator.h5")
 
+
 """## Train the end-to-end model
 
 """
@@ -327,6 +336,7 @@ generator_optimizer = keras.optimizers.Adam(
 discriminator_optimizer = keras.optimizers.Adam(
     learning_rate=0.0002, beta_1=0.0, beta_2=0.99, epsilon=1e-8
 )
+
 
 # Define the loss functions for the discriminator,
 # which should be (fake_loss - real_loss).
@@ -342,31 +352,32 @@ def generator_loss(fake_img):
     return -tf.reduce_mean(fake_img)
 
 
-# Set the number of epochs for trainining.
-epochs = 5
+if __name__ == "__main__":
+    # Set the number of epochs for trainining.
+    epochs = 5
 
-# Instantiate the customer `GANMonitor` Keras callback.
-cbk = GANMonitor(num_img=6, latent_dim=noise_dim)
+    #   Instantiate the customer `GANMonitor` Keras callback.
+    cbk = GANMonitor(num_img=6, latent_dim=noise_dim)
 
-# Instantiate the WGAN model.
-wgan = WGAN(
-    discriminator=d_model,
-    generator=g_model,
-    latent_dim=noise_dim,
-    discriminator_extra_steps=1,
-)
+    # Instantiate the WGAN model.
+    wgan = WGAN(
+        discriminator=d_model,
+        generator=g_model,
+        latent_dim=noise_dim,
+        discriminator_extra_steps=1,
+    )
 
-# Compile the WGAN model.
-wgan.compile(
-    d_optimizer=discriminator_optimizer,
-    g_optimizer=generator_optimizer,
-    g_loss_fn=generator_loss,
-    d_loss_fn=discriminator_loss,
-)
+    # Compile the WGAN model.
+    wgan.compile(
+        d_optimizer=discriminator_optimizer,
+        g_optimizer=generator_optimizer,
+        g_loss_fn=generator_loss,
+        d_loss_fn=discriminator_loss,
+    )
 
-# Start training the model.
-wgan.fit(train_images, batch_size=BATCH_SIZE, epochs=epochs, callbacks=[cbk])
-wgan.fit(train_images, batch_size=int(BATCH_SIZE/2), epochs=epochs, callbacks=[cbk])
-wgan.fit(train_images, batch_size=int(BATCH_SIZE/4), epochs=epochs, callbacks=[cbk])
-wgan.fit(train_images, batch_size=int(BATCH_SIZE/8), epochs=epochs, callbacks=[cbk])
-wgan.fit(train_images, batch_size=int(BATCH_SIZE/16), epochs=epochs, callbacks=[cbk])
+    # Start training the model.
+    wgan.fit(train_images, batch_size=BATCH_SIZE, epochs=epochs, callbacks=[cbk])
+    wgan.fit(train_images, batch_size=int(BATCH_SIZE / 2), epochs=epochs, callbacks=[cbk])
+    wgan.fit(train_images, batch_size=int(BATCH_SIZE / 4), epochs=epochs, callbacks=[cbk])
+    wgan.fit(train_images, batch_size=int(BATCH_SIZE / 8), epochs=epochs, callbacks=[cbk])
+    wgan.fit(train_images, batch_size=int(BATCH_SIZE / 16), epochs=epochs, callbacks=[cbk])
