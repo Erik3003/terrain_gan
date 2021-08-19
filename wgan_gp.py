@@ -55,7 +55,7 @@ BATCH_SIZE = 16
 FILTER_DEPTH = 4
 
 # Size of the noise vector
-noise_dim = 256
+noise_dim = 512
 
 train_images = []
 # 86176
@@ -93,6 +93,8 @@ for each sample; and
 - Ihe generator: crop the final output to match the shape with input shape.
 """
 
+def pixel_norm(x, epsilon=1e-8):
+    return x * tf.math.rsqrt(tf.reduce_mean(tf.square(x), axis=1, keepdims=True) + epsilon)
 
 def conv_block(x, depth, strides, kernel_size, depth_multiplier=2):
     x = layers.Conv2D(FILTER_DEPTH * depth, kernel_size=3, strides=1, padding="same", use_bias=True)(x)
@@ -118,9 +120,9 @@ def get_discriminator_model():
     x = conv_block(x, 8, 2, 3)
     x = conv_block(x, 16, 2, 3)
     x = conv_block(x, 32, 2, 3)
-    x = conv_block(x, 64, 2, 3, 1)
-    x = conv_block(x, 64, 2, 3, 1)
-    x = conv_block(x, 64, 4, 4, 1)
+    x = conv_block(x, 64, 2, 3)
+    x = conv_block(x, 128, 2, 3, 1)
+    x = conv_block(x, 128, 4, 4, 1)
 
     x = layers.Dense(1)(x)
 
@@ -141,20 +143,22 @@ def deconv_block(x, depth, strides, kernel_size):
     x = layers.Conv2D(filters=FILTER_DEPTH * depth, kernel_size=kernel_size, strides=1, padding="same")(x)
     #x = layers.BatchNormalization(momentum=0.8)(x)
     x = layers.LeakyReLU(0.2)(x)
+    x = pixel_norm(x)
     #x = layers.Activation("relu")(x)
     x = layers.Conv2D(filters=FILTER_DEPTH * depth, kernel_size=3, strides=1, padding="same")(x)
     #x = layers.BatchNormalization(momentum=0.8)(x)
     x = layers.LeakyReLU(0.2)(x)
+    x = pixel_norm(x)
     #x = layers.Activation("relu")(x)
     return x
 
 
 def get_generator_model():
     noise = layers.Input(shape=(noise_dim,))
-    x = layers.Reshape((1, 1, FILTER_DEPTH * 64))(noise)
+    x = layers.Reshape((1, 1, FILTER_DEPTH * 128))(noise)
 
-    x = deconv_block(x, 64, 4, 4)
-    x = deconv_block(x, 64, 2, 3)
+    x = deconv_block(x, 128, 4, 4)
+    x = deconv_block(x, 128, 2, 3)
     x = deconv_block(x, 64, 2, 3)
     x = deconv_block(x, 32, 2, 3)
     x = deconv_block(x, 16, 2, 3)
@@ -262,6 +266,8 @@ class WGAN(keras.Model):
                 gp = self.gradient_penalty(batch_size, real_images, fake_images)
                 # Add the gradient penalty to the original discriminator loss
                 d_loss = d_cost + gp * self.gp_weight
+                epsilon_penalty = tf.square(real_logits)
+                d_loss += epsilon_penalty * 0.001
 
             # Get the gradients w.r.t the discriminator loss
             d_gradient = tape.gradient(d_loss, self.discriminator.trainable_variables)
@@ -316,10 +322,10 @@ class GANMonitor(keras.callbacks.Callback):
 # Instantiate the optimizer for both networks
 # (learning_rate=0.0002, beta_1=0.5 are recommended)
 generator_optimizer = keras.optimizers.Adam(
-    learning_rate=0.0002, beta_1=0.5, beta_2=0.9
+    learning_rate=0.0002, beta_1=0.0, beta_2=0.99, epsilon=1e-8
 )
 discriminator_optimizer = keras.optimizers.Adam(
-    learning_rate=0.0002, beta_1=0.5, beta_2=0.9
+    learning_rate=0.0002, beta_1=0.0, beta_2=0.99, epsilon=1e-8
 )
 
 # Define the loss functions for the discriminator,
@@ -337,7 +343,7 @@ def generator_loss(fake_img):
 
 
 # Set the number of epochs for trainining.
-epochs = 200
+epochs = 5
 
 # Instantiate the customer `GANMonitor` Keras callback.
 cbk = GANMonitor(num_img=6, latent_dim=noise_dim)
@@ -347,7 +353,7 @@ wgan = WGAN(
     discriminator=d_model,
     generator=g_model,
     latent_dim=noise_dim,
-    discriminator_extra_steps=5,
+    discriminator_extra_steps=1,
 )
 
 # Compile the WGAN model.
@@ -360,3 +366,7 @@ wgan.compile(
 
 # Start training the model.
 wgan.fit(train_images, batch_size=BATCH_SIZE, epochs=epochs, callbacks=[cbk])
+wgan.fit(train_images, batch_size=int(BATCH_SIZE/2), epochs=epochs, callbacks=[cbk])
+wgan.fit(train_images, batch_size=int(BATCH_SIZE/4), epochs=epochs, callbacks=[cbk])
+wgan.fit(train_images, batch_size=int(BATCH_SIZE/8), epochs=epochs, callbacks=[cbk])
+wgan.fit(train_images, batch_size=int(BATCH_SIZE/16), epochs=epochs, callbacks=[cbk])
