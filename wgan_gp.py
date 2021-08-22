@@ -31,13 +31,12 @@ that keeps the L2 norm of the discriminator gradients close to 1.
 
 ## Setup
 """
-import random
-
 import numpy as np
 import cv2
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
+
 
 """## Prepare the Fashion-MNIST data
 
@@ -102,12 +101,12 @@ def conv_block(x, depth, strides, kernel_size, depth_multiplier=2):
     x = layers.Conv2D(FILTER_DEPTH * depth, kernel_size=3, strides=1, padding="same", use_bias=True)(x)
     # x = layers.LayerNormalization()(x)
     x = layers.LeakyReLU(0.2)(x)
-    # x = layers.Dropout(0.2)(x)
+    #x = layers.Dropout(0.2)(x)
     x = layers.Conv2D(FILTER_DEPTH * depth * depth_multiplier, kernel_size=kernel_size, strides=1, padding="same",
                       use_bias=True)(x)
     x  # = layers.LayerNormalization()(x)
     x = layers.LeakyReLU(0.2)(x)
-    # x = layers.Dropout(0.2)(x)
+    #x = layers.Dropout(0.2)(x)
     x = layers.AveragePooling2D(strides)(x)
     return x
 
@@ -132,10 +131,6 @@ def get_discriminator_model():
     d_model = keras.models.Model(img_input, x, name="discriminator")
     return d_model
 
-
-if __name__ == "__main__":
-    d_model = get_discriminator_model()
-    d_model.summary()
 
 """## Create the generator
 
@@ -177,6 +172,8 @@ def get_generator_model():
 
 
 if __name__ == "__main__":
+    d_model = get_discriminator_model()
+    d_model.summary()
     g_model = get_generator_model()
     g_model.summary()
 
@@ -328,16 +325,6 @@ class GANMonitor(keras.callbacks.Callback):
 
 """
 
-# Instantiate the optimizer for both networks
-# (learning_rate=0.0002, beta_1=0.5 are recommended)
-generator_optimizer = keras.optimizers.Adam(
-    learning_rate=0.0002, beta_1=0.0, beta_2=0.99, epsilon=1e-8
-)
-discriminator_optimizer = keras.optimizers.Adam(
-    learning_rate=0.0002, beta_1=0.0, beta_2=0.99, epsilon=1e-8
-)
-
-
 # Define the loss functions for the discriminator,
 # which should be (fake_loss - real_loss).
 # We will add the gradient penalty later to this loss function.
@@ -351,13 +338,25 @@ def discriminator_loss(real_img, fake_img):
 def generator_loss(fake_img):
     return -tf.reduce_mean(fake_img)
 
+# learning_rate=0.0002, beta_1=0.0, beta_2=0.99, epsilon=1e-8
+generator_optimizer = keras.optimizers.Adam(
+    learning_rate=0.0002, beta_1=0.0, beta_2=0.7233293237969016, epsilon=1e-8
+)
+
+discriminator_optimizer = keras.optimizers.Adam(
+    learning_rate=0.0002, beta_1=0.0, beta_2=0.7233293237969016, epsilon=1e-8
+)
 
 if __name__ == "__main__":
     # Set the number of epochs for trainining.
-    epochs = 5
+    epochs = 20
 
     #   Instantiate the customer `GANMonitor` Keras callback.
     cbk = GANMonitor(num_img=6, latent_dim=noise_dim)
+
+    # Instantiate the optimizer for both networks
+    # (learning_rate=0.0002, beta_1=0.5 are recommended)
+
 
     # Instantiate the WGAN model.
     wgan = WGAN(
@@ -376,8 +375,8 @@ if __name__ == "__main__":
     )
 
     # Start training the model.
-    wgan.fit(train_images, batch_size=BATCH_SIZE, epochs=epochs, callbacks=[cbk])
-    wgan.fit(train_images, batch_size=int(BATCH_SIZE / 2), epochs=epochs, callbacks=[cbk])
-    wgan.fit(train_images, batch_size=int(BATCH_SIZE / 4), epochs=epochs, callbacks=[cbk])
-    wgan.fit(train_images, batch_size=int(BATCH_SIZE / 8), epochs=epochs, callbacks=[cbk])
-    wgan.fit(train_images, batch_size=int(BATCH_SIZE / 16), epochs=epochs, callbacks=[cbk])
+    history = wgan.fit(train_images, batch_size=BATCH_SIZE, epochs=epochs, callbacks=[cbk])
+    #wgan.fit(train_images, batch_size=int(BATCH_SIZE / 2), epochs=epochs, callbacks=[cbk])
+    #wgan.fit(train_images, batch_size=int(BATCH_SIZE / 4), epochs=epochs, callbacks=[cbk])
+    #wgan.fit(train_images, batch_size=int(BATCH_SIZE / 8), epochs=epochs, callbacks=[cbk])
+    #wgan.fit(train_images, batch_size=int(BATCH_SIZE / 16), epochs=epochs, callbacks=[cbk])
