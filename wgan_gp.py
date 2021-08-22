@@ -31,6 +31,7 @@ that keeps the L2 norm of the discriminator gradients close to 1.
 
 ## Setup
 """
+import demjson as demjson
 import numpy as np
 import cv2
 import tensorflow as tf
@@ -77,36 +78,20 @@ train_images = (train_images - 127.5) / 127.5
 np.random.seed(3213)
 np.random.shuffle(train_images)
 
-"""## Create the discriminator (the critic in the original WGAN)
-
-The samples in the dataset have a (28, 28, 1) shape. Because we will be
-using strided convolutions, this can result in a shape with odd dimensions.
-For example,
-`(28, 28) -> Conv_s2 -> (14, 14) -> Conv_s2 -> (7, 7) -> Conv_s2 ->(3, 3)`.
-
-While peforming upsampling in the generator part of the network, we won't get 
-the same input shape as the original images if we aren't careful. To avoid this,
-we will do something much simpler:
-- In the discriminator: "zero pad" the input to change the shape to `(32, 32, 1)`
-for each sample; and
-- Ihe generator: crop the final output to match the shape with input shape.
-"""
-
-
 def pixel_norm(x, epsilon=1e-8):
     return x * tf.math.rsqrt(tf.reduce_mean(tf.square(x), axis=1, keepdims=True) + epsilon)
 
 
-def conv_block(x, depth, strides, kernel_size, depth_multiplier=2):
-    x = layers.Conv2D(FILTER_DEPTH * depth, kernel_size=3, strides=1, padding="same", use_bias=True)(x)
-    # x = layers.LayerNormalization()(x)
+def lerp(a, b, t):
+    return a + (b - a) * t
+
+
+def conv_block(x, depth, strides, kernel_size, depth_multiplier=2, transition=1.0):
+    x = layers.Conv2D(FILTER_DEPTH * depth, kernel_size=max(3, kernel_size - 1), strides=1, padding="same", use_bias=True)(x)
     x = layers.LeakyReLU(0.2)(x)
-    #x = layers.Dropout(0.2)(x)
     x = layers.Conv2D(FILTER_DEPTH * depth * depth_multiplier, kernel_size=kernel_size, strides=1, padding="same",
                       use_bias=True)(x)
-    x  # = layers.LayerNormalization()(x)
     x = layers.LeakyReLU(0.2)(x)
-    #x = layers.Dropout(0.2)(x)
     x = layers.AveragePooling2D(strides)(x)
     return x
 
@@ -114,27 +99,26 @@ def conv_block(x, depth, strides, kernel_size, depth_multiplier=2):
 def get_discriminator_model():
     img_input = layers.Input(shape=IMG_SHAPE)
 
+    y = layers.AveragePooling2D(2)(img_input)
+    y = layers.Conv2D(FILTER_DEPTH * 8, kernel_size=1, strides=1, padding="same", use_bias=True)(y)
+    y = layers.LeakyReLU(0.2)(y)
+
     x = layers.Conv2D(FILTER_DEPTH * 4, kernel_size=1, strides=1, padding="same", use_bias=True)(img_input)
     x = layers.LeakyReLU(0.2)(x)
-    # x = layers.Dropout(0.2)(x)
 
     x = conv_block(x, 4, 2, 3)
+    x = lerp(y, x, 0.0)
+
     x = conv_block(x, 8, 2, 3)
     x = conv_block(x, 16, 2, 3)
     x = conv_block(x, 32, 2, 3)
     x = conv_block(x, 64, 2, 3)
     x = conv_block(x, 128, 2, 3, 1)
-    x = conv_block(x, 128, 4, 4, 1)
-
+    x = conv_block(x, 128, 4, 5, 1)
     x = layers.Dense(1)(x)
 
     d_model = keras.models.Model(img_input, x, name="discriminator")
     return d_model
-
-
-"""## Create the generator
-
-"""
 
 
 def deconv_block(x, depth, strides, kernel_size):
@@ -144,28 +128,37 @@ def deconv_block(x, depth, strides, kernel_size):
     x = layers.LeakyReLU(0.2)(x)
     x = pixel_norm(x)
     # x = layers.Activation("relu")(x)
-    x = layers.Conv2D(filters=FILTER_DEPTH * depth, kernel_size=3, strides=1, padding="same")(x)
+    x = layers.Conv2D(filters=FILTER_DEPTH * depth, kernel_size=max(3, kernel_size - 1), strides=1, padding="same")(x)
     # x = layers.BatchNormalization(momentum=0.8)(x)
     x = layers.LeakyReLU(0.2)(x)
     x = pixel_norm(x)
     # x = layers.Activation("relu")(x)
     return x
 
+def g_transition_block(x, depth, strides, kernel_size):
+    y = layers.UpSampling2D(2)(x)
+    x = deconv_block(x, depth, strides, kernel_size)
+    x = layers.Conv2D(filters=1, kernel_size=1, strides=1, padding="same")(x)
+    x = layers.Activation("linear")(x)
+
+    y = layers.Conv2D(filters=1, kernel_size=1, strides=1, padding="same")(y)
+    y = layers.Activation("linear")(y)
+
+    x = lerp(y, x, 0.0)
+    return x
 
 def get_generator_model():
     noise = layers.Input(shape=(noise_dim,))
     x = layers.Reshape((1, 1, FILTER_DEPTH * 128))(noise)
 
-    x = deconv_block(x, 128, 4, 4)
+    x = deconv_block(x, 128, 4, 5)
     x = deconv_block(x, 128, 2, 3)
     x = deconv_block(x, 64, 2, 3)
     x = deconv_block(x, 32, 2, 3)
     x = deconv_block(x, 16, 2, 3)
     x = deconv_block(x, 8, 2, 3)
-    x = deconv_block(x, 4, 2, 3)
 
-    x = layers.Conv2D(filters=1, kernel_size=1, strides=1, padding="same")(x)
-    x = layers.Activation("linear")(x)
+    #x = g_transition_block(x, 4, 2, 3)
 
     g_model = keras.models.Model(noise, x, name="generator")
     return g_model
@@ -308,6 +301,14 @@ class GANMonitor(keras.callbacks.Callback):
         self.latent_dim = latent_dim
         self.random_latent_vectors = tf.random.normal(shape=(self.num_img, self.latent_dim), seed=3342934)
 
+    def on_train_batch_begin(self, step, logs=None):
+        epoch = int(step/512)
+
+        if step == 0:
+            #self.transition_generator()
+            self.extend_generator()
+
+
     def on_epoch_end(self, epoch, logs=None):
         generated_images = self.model.generator(self.random_latent_vectors)
         generated_images = (generated_images * 127.5) + 127.5
@@ -319,6 +320,15 @@ class GANMonitor(keras.callbacks.Callback):
 
         self.model.generator.save("models\\Generator_{epoch}.h5".format(epoch=epoch))
         self.model.discriminator.save("models\\Discriminator.h5")
+
+    def extend_generator(self):
+        self.model.generator = keras.models.Model(self.model.generator.input, g_transition_block(self.model.generator.layers[-2].output, 4, 2, 3))
+        self.model.generator.summary()
+
+    def transition_generator(self):
+        self.model.generator = keras.models.Model(self.model.generator.input, self.model.generator.layers[-4].output)
+        self.model.generator.summary()
+
 
 
 """## Train the end-to-end model
@@ -337,14 +347,14 @@ def discriminator_loss(real_img, fake_img):
 # Define the loss functions for the generator.
 def generator_loss(fake_img):
     return -tf.reduce_mean(fake_img)
-
+# learning_rate=0.0002, beta_1=0.0, beta_2=0.7233293237969016, epsilon=1e-8
 # learning_rate=0.0002, beta_1=0.0, beta_2=0.99, epsilon=1e-8
 generator_optimizer = keras.optimizers.Adam(
-    learning_rate=0.0002, beta_1=0.0, beta_2=0.7233293237969016, epsilon=1e-8
+    learning_rate=0.0002, beta_1=0.0, beta_2=0.99, epsilon=1e-8
 )
 
 discriminator_optimizer = keras.optimizers.Adam(
-    learning_rate=0.0002, beta_1=0.0, beta_2=0.7233293237969016, epsilon=1e-8
+    learning_rate=0.0002, beta_1=0.0, beta_2=0.99, epsilon=1e-8
 )
 
 if __name__ == "__main__":
