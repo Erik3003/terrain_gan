@@ -50,7 +50,17 @@ sample in this dataset is a 28x28 grayscale image associated with a label from
 gpus = tf.config.experimental.list_physical_devices('GPU')
 tf.config.experimental.set_memory_growth(gpus[0], True)
 
-IMG_SHAPE = (256, 256, 1)
+img_shape_config = [
+    (4, 4, 1),
+    (8, 8, 1),
+    (16, 16, 1),
+    (32, 32, 1),
+    (64, 64, 1),
+    (128, 128, 1),
+    (256, 256, 1)
+]
+
+IMG_SHAPE = (4, 4, 1)
 BATCH_SIZE = 16
 FILTER_DEPTH = 4
 
@@ -72,7 +82,7 @@ for index in range(1024):
     train_images.append(cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE))
 
 train_images = np.array(train_images, dtype="float32")
-train_images = train_images.reshape(train_images.shape[0], *IMG_SHAPE)
+train_images = train_images.reshape(train_images.shape[0], *(256, 256, 1))
 print(train_images.shape)
 train_images = (train_images - 127.5) / 127.5
 np.random.seed(3213)
@@ -86,35 +96,51 @@ def lerp(a, b, t):
     return a + (b - a) * t
 
 
-def conv_block(x, depth, strides, kernel_size, depth_multiplier=2, transition=1.0):
-    x = layers.Conv2D(FILTER_DEPTH * depth, kernel_size=max(3, kernel_size - 1), strides=1, padding="same", use_bias=True)(x)
+def conv_block(x, depth, strides, kernel_size, depth_multiplier=2, weights=None):
+    l_1 = layers.Conv2D(FILTER_DEPTH * depth, kernel_size=max(3, kernel_size - 1), strides=1, padding="same", use_bias=True)
+    x = l_1(x)
+    if weights:
+        l_1.set_weights(weights[0])
     x = layers.LeakyReLU(0.2)(x)
-    x = layers.Conv2D(FILTER_DEPTH * depth * depth_multiplier, kernel_size=kernel_size, strides=1, padding="same",
-                      use_bias=True)(x)
+    l_2 = layers.Conv2D(FILTER_DEPTH * depth * depth_multiplier, kernel_size=kernel_size, strides=1, padding="same",
+                      use_bias=True)
+    x = l_2(x)
+    if weights:
+        l_2.set_weights(weights[1])
     x = layers.LeakyReLU(0.2)(x)
     x = layers.AveragePooling2D(strides)(x)
     return x
 
+def d_transition_block(x, depth, strides, kernel_size, depth_multiplier=2, weights=None):
+    y = layers.AveragePooling2D(strides)(x)
+    y = layers.Conv2D(FILTER_DEPTH * depth * depth_multiplier, kernel_size=1, strides=1, padding="same", use_bias=True)(y)
+    y = layers.LeakyReLU(0.2)(y)
+
+    x = layers.Conv2D(FILTER_DEPTH * depth, kernel_size=1, strides=1, padding="same", use_bias=True)(x)
+    x = layers.LeakyReLU(0.2)(x)
+    x = conv_block(x, depth, strides, kernel_size, depth_multiplier, weights)
+
+    x = lerp(y, x, 0.0)
+    return x
+
+d_layer_config = [
+    [128, 4, 5, 1],
+    [128, 2, 3, 1],
+    [64, 2, 3, 2],
+    [32, 2, 3, 2],
+    [16, 2, 3, 2],
+    [8, 2, 3, 2],
+    [4, 2, 3, 2],
+]
 
 def get_discriminator_model():
     img_input = layers.Input(shape=IMG_SHAPE)
 
-    y = layers.AveragePooling2D(2)(img_input)
-    y = layers.Conv2D(FILTER_DEPTH * 8, kernel_size=1, strides=1, padding="same", use_bias=True)(y)
-    y = layers.LeakyReLU(0.2)(y)
-
-    x = layers.Conv2D(FILTER_DEPTH * 4, kernel_size=1, strides=1, padding="same", use_bias=True)(img_input)
+    x = layers.Conv2D(FILTER_DEPTH * 128, kernel_size=1, strides=1, padding="same", use_bias=True)(img_input)
     x = layers.LeakyReLU(0.2)(x)
 
-    x = conv_block(x, 4, 2, 3)
-    x = lerp(y, x, 0.0)
-
-    x = conv_block(x, 8, 2, 3)
-    x = conv_block(x, 16, 2, 3)
-    x = conv_block(x, 32, 2, 3)
-    x = conv_block(x, 64, 2, 3)
-    x = conv_block(x, 128, 2, 3, 1)
     x = conv_block(x, 128, 4, 5, 1)
+
     x = layers.Dense(1)(x)
 
     d_model = keras.models.Model(img_input, x, name="discriminator")
@@ -124,19 +150,15 @@ def get_discriminator_model():
 def deconv_block(x, depth, strides, kernel_size):
     x = layers.UpSampling2D(strides)(x)
     x = layers.Conv2D(filters=FILTER_DEPTH * depth, kernel_size=kernel_size, strides=1, padding="same")(x)
-    # x = layers.BatchNormalization(momentum=0.8)(x)
     x = layers.LeakyReLU(0.2)(x)
     x = pixel_norm(x)
-    # x = layers.Activation("relu")(x)
     x = layers.Conv2D(filters=FILTER_DEPTH * depth, kernel_size=max(3, kernel_size - 1), strides=1, padding="same")(x)
-    # x = layers.BatchNormalization(momentum=0.8)(x)
     x = layers.LeakyReLU(0.2)(x)
     x = pixel_norm(x)
-    # x = layers.Activation("relu")(x)
     return x
 
 def g_transition_block(x, depth, strides, kernel_size):
-    y = layers.UpSampling2D(2)(x)
+    y = layers.UpSampling2D(strides)(x)
     x = deconv_block(x, depth, strides, kernel_size)
     x = layers.Conv2D(filters=1, kernel_size=1, strides=1, padding="same")(x)
     x = layers.Activation("linear")(x)
@@ -147,18 +169,30 @@ def g_transition_block(x, depth, strides, kernel_size):
     x = lerp(y, x, 0.0)
     return x
 
+g_layer_config = [
+    [128, 4, 5],
+    [128, 2, 3],
+    [64, 2, 3],
+    [32, 2, 3],
+    [16, 2, 3],
+    [8, 2, 3],
+    [4, 2, 3]
+]
+
 def get_generator_model():
     noise = layers.Input(shape=(noise_dim,))
     x = layers.Reshape((1, 1, FILTER_DEPTH * 128))(noise)
 
     x = deconv_block(x, 128, 4, 5)
-    x = deconv_block(x, 128, 2, 3)
+    x = layers.Conv2D(filters=1, kernel_size=1, strides=1, padding="same")(x)
+    x = layers.Activation("linear")(x)
+    """x = deconv_block(x, 128, 2, 3)
     x = deconv_block(x, 64, 2, 3)
     x = deconv_block(x, 32, 2, 3)
     x = deconv_block(x, 16, 2, 3)
-    x = deconv_block(x, 8, 2, 3)
+    x = deconv_block(x, 8, 2, 3)"""
 
-    #x = g_transition_block(x, 4, 2, 3)
+    #x = g_transition_block(x, 4, 2, 3) #256
 
     g_model = keras.models.Model(noise, x, name="generator")
     return g_model
@@ -229,6 +263,9 @@ class WGAN(keras.Model):
 
         # Get the batch size
         batch_size = tf.shape(real_images)[0]
+        real_images = tf.image.resize(real_images, IMG_SHAPE[:2])
+        """for i in range(batch_size):
+            cv2.resize(real_images[i], *IMG_SHAPE)"""
 
         # For each batch, we are going to perform the
         # following steps as laid out in the original paper:
@@ -304,9 +341,15 @@ class GANMonitor(keras.callbacks.Callback):
     def on_train_batch_begin(self, step, logs=None):
         epoch = int(step/512)
 
-        if step == 0:
+        if step == 3:
             #self.transition_generator()
-            self.extend_generator()
+            global IMG_SHAPE
+            IMG_SHAPE = img_shape_config[1]
+            self.extend_discriminator(1)
+            self.extend_generator(1)
+            self.transition_discriminator(1)
+            self.transition_generator(1)
+            #self.transition_discriminator()
 
 
     def on_epoch_end(self, epoch, logs=None):
@@ -321,13 +364,46 @@ class GANMonitor(keras.callbacks.Callback):
         self.model.generator.save("models\\Generator_{epoch}.h5".format(epoch=epoch))
         self.model.discriminator.save("models\\Discriminator.h5")
 
-    def extend_generator(self):
-        self.model.generator = keras.models.Model(self.model.generator.input, g_transition_block(self.model.generator.layers[-2].output, 4, 2, 3))
+    def extend_generator(self, config):
+        config = g_layer_config[config]
+        self.model.generator = keras.models.Model(self.model.generator.input, g_transition_block(self.model.generator.layers[-3].output, config[0], config[1], config[2]), name="new_generator")
+        #self.model.generator.summary()
+
+    def transition_generator(self, config):
+        self.model.generator = keras.models.Model(self.model.generator.input, self.model.generator.layers[-4].output, name="new_generator")
         self.model.generator.summary()
 
-    def transition_generator(self):
-        self.model.generator = keras.models.Model(self.model.generator.input, self.model.generator.layers[-4].output)
-        self.model.generator.summary()
+    def extend_discriminator(self, config):
+        print("here!")
+        config = d_layer_config[config]
+        d_layers = self.model.discriminator.layers[3:]
+        print(IMG_SHAPE)
+        input_layer = layers.Input(shape=IMG_SHAPE)
+        print("here!")
+        x = d_transition_block(input_layer, config[0], config[1], config[2], config[3])
+        print("here!!!")
+        for layer in d_layers:
+            x = layer(x)
+        self.model.discriminator = keras.models.Model(input_layer, x, name="new_discriminator")
+        #self.model.discriminator.summary()
+
+    def transition_discriminator(self, config):
+        config = d_layer_config[config]
+        d_layers = self.model.discriminator.layers[14:]
+        weights = []
+        weights.append(self.model.discriminator.layers[1].get_weights())
+        weights.append(self.model.discriminator.layers[3].get_weights())
+        weights.append(self.model.discriminator.layers[6].get_weights())
+        input_layer = layers.Input(shape=IMG_SHAPE)
+        from_BW = layers.Conv2D(FILTER_DEPTH * config[0], kernel_size=1, strides=1, padding="same", use_bias=True)
+        x = from_BW(input_layer)
+        from_BW.set_weights(weights[0])
+        x = layers.LeakyReLU(0.2)(x)
+        x = conv_block(x, config[0], config[1], config[2], config[3], weights=weights[1:])
+        for layer in d_layers:
+            x = layer(x)
+        self.model.discriminator = keras.models.Model(input_layer, x, name="new_discriminator")
+        self.model.discriminator.summary()
 
 
 
