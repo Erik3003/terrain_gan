@@ -63,6 +63,8 @@ img_shape_config = [
 IMG_SHAPE = (4, 4, 1)
 BATCH_SIZE = 16
 FILTER_DEPTH = 4
+CURRENT_SIZE = 0
+CURRENT_TRANSITION = tf.Variable(1.0)
 
 # Size of the noise vector
 noise_dim = 512
@@ -88,6 +90,7 @@ train_images = (train_images - 127.5) / 127.5
 np.random.seed(3213)
 np.random.shuffle(train_images)
 
+
 def pixel_norm(x, epsilon=1e-8):
     return x * tf.math.rsqrt(tf.reduce_mean(tf.square(x), axis=1, keepdims=True) + epsilon)
 
@@ -111,6 +114,7 @@ def conv_block(x, depth, strides, kernel_size, depth_multiplier=2, weights=None)
     x = layers.AveragePooling2D(strides)(x)
     return x
 
+
 def d_transition_block(x, depth, strides, kernel_size, depth_multiplier=2, weights=None):
     y = layers.AveragePooling2D(strides)(x)
     y = layers.Conv2D(FILTER_DEPTH * depth * depth_multiplier, kernel_size=1, strides=1, padding="same", use_bias=True)(y)
@@ -120,8 +124,9 @@ def d_transition_block(x, depth, strides, kernel_size, depth_multiplier=2, weigh
     x = layers.LeakyReLU(0.2)(x)
     x = conv_block(x, depth, strides, kernel_size, depth_multiplier, weights)
 
-    x = lerp(y, x, 0.0)
+    x = lerp(y, x, CURRENT_TRANSITION)
     return x
+
 
 d_layer_config = [
     [128, 4, 5, 1],
@@ -132,6 +137,7 @@ d_layer_config = [
     [8, 2, 3, 2],
     [4, 2, 3, 2],
 ]
+
 
 def get_discriminator_model():
     img_input = layers.Input(shape=IMG_SHAPE)
@@ -157,6 +163,7 @@ def deconv_block(x, depth, strides, kernel_size):
     x = pixel_norm(x)
     return x
 
+
 def g_transition_block(x, depth, strides, kernel_size):
     y = layers.UpSampling2D(strides)(x)
     x = deconv_block(x, depth, strides, kernel_size)
@@ -166,8 +173,9 @@ def g_transition_block(x, depth, strides, kernel_size):
     y = layers.Conv2D(filters=1, kernel_size=1, strides=1, padding="same")(y)
     y = layers.Activation("linear")(y)
 
-    x = lerp(y, x, 0.0)
+    x = lerp(y, x, CURRENT_TRANSITION)
     return x
+
 
 g_layer_config = [
     [128, 4, 5],
@@ -178,6 +186,7 @@ g_layer_config = [
     [8, 2, 3],
     [4, 2, 3]
 ]
+
 
 def get_generator_model():
     noise = layers.Input(shape=(noise_dim,))
@@ -341,18 +350,36 @@ class GANMonitor(keras.callbacks.Callback):
     def on_train_batch_begin(self, step, logs=None):
         epoch = int(step/512)
 
-        if step == 3:
-            #self.transition_generator()
-            global IMG_SHAPE
-            IMG_SHAPE = img_shape_config[1]
-            self.extend_discriminator(1)
-            self.extend_generator(1)
-            self.transition_discriminator(1)
-            self.transition_generator(1)
-            #self.transition_discriminator()
+
+    def on_train_batch_end(self, step, logs=None):
+        """if step % 128 != 0:
+            return
+
+        generated_images = self.model.generator(self.random_latent_vectors)
+        generated_images = (generated_images * 127.5) + 127.5
+        #CURRENT_TRANSITION.assign_add(128 / 512)
+        print(CURRENT_TRANSITION)
+        for i in range(self.num_img):
+            img = generated_images[i].numpy()
+            img = keras.preprocessing.image.array_to_img(img)
+            img.save("output\\{epoch}_heightmap_{i}.png".format(i=i, epoch=step))"""
+        pass
+
+    def on_epoch_begin(self, epoch, logs=None):
+        if epoch > 0:
+            return
+        print("Beginning epoch!")
+        global IMG_SHAPE
+        IMG_SHAPE = img_shape_config[1]
+        self.extend_discriminator(1)
+        self.extend_generator(1)
 
 
     def on_epoch_end(self, epoch, logs=None):
+        """
+            TODO: Smooth real_image transition
+            TODO: Sequencing
+        """
         generated_images = self.model.generator(self.random_latent_vectors)
         generated_images = (generated_images * 127.5) + 127.5
 
@@ -360,7 +387,8 @@ class GANMonitor(keras.callbacks.Callback):
             img = generated_images[i].numpy()
             img = keras.preprocessing.image.array_to_img(img)
             img.save("output\\{epoch}_heightmap_{i}.png".format(i=i, epoch=epoch))
-
+        self.transition_generator(1)
+        self.transition_discriminator(1)
         self.model.generator.save("models\\Generator_{epoch}.h5".format(epoch=epoch))
         self.model.discriminator.save("models\\Discriminator.h5")
 
@@ -374,14 +402,11 @@ class GANMonitor(keras.callbacks.Callback):
         self.model.generator.summary()
 
     def extend_discriminator(self, config):
-        print("here!")
         config = d_layer_config[config]
         d_layers = self.model.discriminator.layers[3:]
         print(IMG_SHAPE)
         input_layer = layers.Input(shape=IMG_SHAPE)
-        print("here!")
         x = d_transition_block(input_layer, config[0], config[1], config[2], config[3])
-        print("here!!!")
         for layer in d_layers:
             x = layer(x)
         self.model.discriminator = keras.models.Model(input_layer, x, name="new_discriminator")
@@ -435,7 +460,7 @@ discriminator_optimizer = keras.optimizers.Adam(
 
 if __name__ == "__main__":
     # Set the number of epochs for trainining.
-    epochs = 20
+    epochs = 1
 
     #   Instantiate the customer `GANMonitor` Keras callback.
     cbk = GANMonitor(num_img=6, latent_dim=noise_dim)
