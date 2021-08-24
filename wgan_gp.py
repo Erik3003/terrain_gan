@@ -31,7 +31,7 @@ that keeps the L2 norm of the discriminator gradients close to 1.
 
 ## Setup
 """
-import demjson as demjson
+import math
 import numpy as np
 import cv2
 import tensorflow as tf
@@ -61,10 +61,15 @@ img_shape_config = [
 ]
 
 IMG_SHAPE = (4, 4, 1)
+EPOCHS_PER_SIZE = 4
+TOTAL_EPOCHS = EPOCHS_PER_SIZE * ((len(img_shape_config)-1) * 2 + 1)
 BATCH_SIZE = 16
 FILTER_DEPTH = 4
 CURRENT_SIZE = 0
-CURRENT_TRANSITION = tf.Variable(1.0)
+CURRENT_TRANSITION = tf.Variable(0.0)
+TRANSITION_SPEED = 0.0
+IS_TRANSITION = False
+
 
 # Size of the noise vector
 noise_dim = 512
@@ -272,9 +277,20 @@ class WGAN(keras.Model):
 
         # Get the batch size
         batch_size = tf.shape(real_images)[0]
-        real_images = tf.image.resize(real_images, IMG_SHAPE[:2])
-        """for i in range(batch_size):
-            cv2.resize(real_images[i], *IMG_SHAPE)"""
+
+        if IS_TRANSITION:
+            small_images = tf.image.resize(real_images, (int(IMG_SHAPE[0]/2), int(IMG_SHAPE[1]/2)))
+            small_images = tf.image.resize(small_images, IMG_SHAPE[:2], method=tf.image.ResizeMethod.NEAREST_NEIGHBOR)
+
+        if IMG_SHAPE[0] != img_shape_config[-1][0]:
+            real_images = tf.image.resize(real_images, IMG_SHAPE[:2])
+
+        """out = (tf.gather(small_img, 0) * 127.5) + 127.5
+        out = tf.cast(out, tf.uint8)
+        out = tf.image.encode_png(out)
+        tf.io.write_file("test_s.png", out)"""
+        if IS_TRANSITION:
+            real_images = lerp(small_images, real_images, CURRENT_TRANSITION)
 
         # For each batch, we are going to perform the
         # following steps as laid out in the original paper:
@@ -347,11 +363,9 @@ class GANMonitor(keras.callbacks.Callback):
         self.latent_dim = latent_dim
         self.random_latent_vectors = tf.random.normal(shape=(self.num_img, self.latent_dim), seed=3342934)
 
-    def on_train_batch_begin(self, step, logs=None):
-        epoch = int(step/512)
-
-
     def on_train_batch_end(self, step, logs=None):
+        if IS_TRANSITION:
+            CURRENT_TRANSITION.assign_add(TRANSITION_SPEED)
         """if step % 128 != 0:
             return
 
@@ -363,21 +377,32 @@ class GANMonitor(keras.callbacks.Callback):
             img = generated_images[i].numpy()
             img = keras.preprocessing.image.array_to_img(img)
             img.save("output\\{epoch}_heightmap_{i}.png".format(i=i, epoch=step))"""
-        pass
 
     def on_epoch_begin(self, epoch, logs=None):
-        if epoch > 0:
+        if epoch == 0:
             return
-        print("Beginning epoch!")
-        global IMG_SHAPE
-        IMG_SHAPE = img_shape_config[1]
-        self.extend_discriminator(1)
-        self.extend_generator(1)
+        if epoch % EPOCHS_PER_SIZE == 0:
+            current_step = int(epoch / EPOCHS_PER_SIZE)
+            current_network = int(math.ceil(current_step / 2))
+            print("Changing networks on stage " + str(current_network))
+            global IS_TRANSITION
+            if current_step % 2 == 0:
+                print("Changing to non-transition")
+                IS_TRANSITION = False
+                self.transition_discriminator(current_network)
+                self.transition_generator(current_network)
+            else:
+                print("Changing to transition")
+                IS_TRANSITION = True
+                global IMG_SHAPE
+                IMG_SHAPE = img_shape_config[current_network]
+                CURRENT_TRANSITION.assign(0.0)
+                self.extend_discriminator(current_network)
+                self.extend_generator(current_network)
 
 
     def on_epoch_end(self, epoch, logs=None):
         """
-            TODO: Smooth real_image transition
             TODO: Sequencing
         """
         generated_images = self.model.generator(self.random_latent_vectors)
@@ -387,15 +412,16 @@ class GANMonitor(keras.callbacks.Callback):
             img = generated_images[i].numpy()
             img = keras.preprocessing.image.array_to_img(img)
             img.save("output\\{epoch}_heightmap_{i}.png".format(i=i, epoch=epoch))
-        self.transition_generator(1)
-        self.transition_discriminator(1)
-        self.model.generator.save("models\\Generator_{epoch}.h5".format(epoch=epoch))
-        self.model.discriminator.save("models\\Discriminator.h5")
+
+        # Saving network only possible when not in resolution transition phase
+        if not IS_TRANSITION:
+            self.model.generator.save("models\\Generator_{epoch}.h5".format(epoch=epoch))
+            self.model.discriminator.save("models\\Discriminator.h5")
 
     def extend_generator(self, config):
         config = g_layer_config[config]
         self.model.generator = keras.models.Model(self.model.generator.input, g_transition_block(self.model.generator.layers[-3].output, config[0], config[1], config[2]), name="new_generator")
-        #self.model.generator.summary()
+        self.model.generator.summary()
 
     def transition_generator(self, config):
         self.model.generator = keras.models.Model(self.model.generator.input, self.model.generator.layers[-4].output, name="new_generator")
@@ -410,7 +436,7 @@ class GANMonitor(keras.callbacks.Callback):
         for layer in d_layers:
             x = layer(x)
         self.model.discriminator = keras.models.Model(input_layer, x, name="new_discriminator")
-        #self.model.discriminator.summary()
+        self.model.discriminator.summary()
 
     def transition_discriminator(self, config):
         config = d_layer_config[config]
@@ -459,9 +485,6 @@ discriminator_optimizer = keras.optimizers.Adam(
 )
 
 if __name__ == "__main__":
-    # Set the number of epochs for trainining.
-    epochs = 1
-
     #   Instantiate the customer `GANMonitor` Keras callback.
     cbk = GANMonitor(num_img=6, latent_dim=noise_dim)
 
@@ -485,8 +508,11 @@ if __name__ == "__main__":
         d_loss_fn=discriminator_loss,
     )
 
+    steps_per_epoch = int(math.ceil(len(train_images) / BATCH_SIZE))
+    TRANSITION_SPEED = 1 / steps_per_epoch * EPOCHS_PER_SIZE
+
     # Start training the model.
-    history = wgan.fit(train_images, batch_size=BATCH_SIZE, epochs=epochs, callbacks=[cbk])
+    history = wgan.fit(train_images, batch_size=BATCH_SIZE, epochs=TOTAL_EPOCHS, callbacks=[cbk])
     #wgan.fit(train_images, batch_size=int(BATCH_SIZE / 2), epochs=epochs, callbacks=[cbk])
     #wgan.fit(train_images, batch_size=int(BATCH_SIZE / 4), epochs=epochs, callbacks=[cbk])
     #wgan.fit(train_images, batch_size=int(BATCH_SIZE / 8), epochs=epochs, callbacks=[cbk])
