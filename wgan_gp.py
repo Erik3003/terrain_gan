@@ -61,7 +61,7 @@ img_shape_config = [
 ]
 
 IMG_SHAPE = (4, 4, 1)
-EPOCHS_PER_SIZE = 4
+EPOCHS_PER_SIZE = 20
 TOTAL_EPOCHS = EPOCHS_PER_SIZE * ((len(img_shape_config)-1) * 2 + 1)
 BATCH_SIZE = 16
 FILTER_DEPTH = 4
@@ -122,10 +122,10 @@ def conv_block(x, depth, strides, kernel_size, depth_multiplier=2, weights=None)
 
 def d_transition_block(x, depth, strides, kernel_size, depth_multiplier=2, weights=None):
     y = layers.AveragePooling2D(strides)(x)
-    y = layers.Conv2D(FILTER_DEPTH * depth * depth_multiplier, kernel_size=1, strides=1, padding="same", use_bias=True)(y)
+    y = layers.Conv2D(FILTER_DEPTH * depth * depth_multiplier, kernel_size=1, strides=1, padding="same")(y)
     y = layers.LeakyReLU(0.2)(y)
 
-    x = layers.Conv2D(FILTER_DEPTH * depth, kernel_size=1, strides=1, padding="same", use_bias=True)(x)
+    x = layers.Conv2D(FILTER_DEPTH * depth, kernel_size=1, strides=1, padding="same")(x)
     x = layers.LeakyReLU(0.2)(x)
     x = conv_block(x, depth, strides, kernel_size, depth_multiplier, weights)
 
@@ -134,7 +134,7 @@ def d_transition_block(x, depth, strides, kernel_size, depth_multiplier=2, weigh
 
 
 d_layer_config = [
-    [128, 4, 5, 1],
+    [128, 4, 4, 1],
     [128, 2, 3, 1],
     [64, 2, 3, 2],
     [32, 2, 3, 2],
@@ -147,10 +147,10 @@ d_layer_config = [
 def get_discriminator_model():
     img_input = layers.Input(shape=IMG_SHAPE)
 
-    x = layers.Conv2D(FILTER_DEPTH * 128, kernel_size=1, strides=1, padding="same", use_bias=True)(img_input)
+    x = layers.Conv2D(FILTER_DEPTH * 128, kernel_size=1, strides=1, padding="same")(img_input)
     x = layers.LeakyReLU(0.2)(x)
 
-    x = conv_block(x, 128, 4, 5, 1)
+    x = conv_block(x, 128, 4, 4, 1)
 
     x = layers.Dense(1)(x)
 
@@ -183,7 +183,7 @@ def g_transition_block(x, depth, strides, kernel_size):
 
 
 g_layer_config = [
-    [128, 4, 5],
+    [128, 4, 4],
     [128, 2, 3],
     [64, 2, 3],
     [32, 2, 3],
@@ -197,7 +197,7 @@ def get_generator_model():
     noise = layers.Input(shape=(noise_dim,))
     x = layers.Reshape((1, 1, FILTER_DEPTH * 128))(noise)
 
-    x = deconv_block(x, 128, 4, 5)
+    x = deconv_block(x, 128, 4, 4)
     x = layers.Conv2D(filters=1, kernel_size=1, strides=1, padding="same")(x)
     x = layers.Activation("linear")(x)
     """x = deconv_block(x, 128, 2, 3)
@@ -358,6 +358,11 @@ class WGAN(keras.Model):
 
 
 class GANMonitor(keras.callbacks.Callback):
+    """
+    TODO: Fix to_RBG (Upsampling after to_RBG)
+    TODO: Weight saving for to_RBG/from_RBG
+    """
+
     def __init__(self, num_img=6, latent_dim=128):
         self.num_img = num_img
         self.latent_dim = latent_dim
@@ -402,9 +407,7 @@ class GANMonitor(keras.callbacks.Callback):
 
 
     def on_epoch_end(self, epoch, logs=None):
-        """
-            TODO: Sequencing
-        """
+        print(CURRENT_TRANSITION)
         generated_images = self.model.generator(self.random_latent_vectors)
         generated_images = (generated_images * 127.5) + 127.5
 
@@ -430,7 +433,6 @@ class GANMonitor(keras.callbacks.Callback):
     def extend_discriminator(self, config):
         config = d_layer_config[config]
         d_layers = self.model.discriminator.layers[3:]
-        print(IMG_SHAPE)
         input_layer = layers.Input(shape=IMG_SHAPE)
         x = d_transition_block(input_layer, config[0], config[1], config[2], config[3])
         for layer in d_layers:
@@ -442,15 +444,18 @@ class GANMonitor(keras.callbacks.Callback):
         config = d_layer_config[config]
         d_layers = self.model.discriminator.layers[14:]
         weights = []
+        print(self.model.discriminator.layers[1].name)
+        print(self.model.discriminator.layers[3].name)
+        print(self.model.discriminator.layers[6].name)
         weights.append(self.model.discriminator.layers[1].get_weights())
         weights.append(self.model.discriminator.layers[3].get_weights())
         weights.append(self.model.discriminator.layers[6].get_weights())
         input_layer = layers.Input(shape=IMG_SHAPE)
-        from_BW = layers.Conv2D(FILTER_DEPTH * config[0], kernel_size=1, strides=1, padding="same", use_bias=True)
+        from_BW = layers.Conv2D(FILTER_DEPTH * config[0], kernel_size=1, strides=1, padding="same")
         x = from_BW(input_layer)
         from_BW.set_weights(weights[0])
         x = layers.LeakyReLU(0.2)(x)
-        x = conv_block(x, config[0], config[1], config[2], config[3], weights=weights[1:])
+        x = conv_block(x, config[0], config[1], config[2], config[3], weights=weights)
         for layer in d_layers:
             x = layer(x)
         self.model.discriminator = keras.models.Model(input_layer, x, name="new_discriminator")
@@ -486,7 +491,7 @@ discriminator_optimizer = keras.optimizers.Adam(
 
 if __name__ == "__main__":
     #   Instantiate the customer `GANMonitor` Keras callback.
-    cbk = GANMonitor(num_img=6, latent_dim=noise_dim)
+    cbk = GANMonitor(num_img=1, latent_dim=noise_dim)
 
     # Instantiate the optimizer for both networks
     # (learning_rate=0.0002, beta_1=0.5 are recommended)
@@ -509,7 +514,7 @@ if __name__ == "__main__":
     )
 
     steps_per_epoch = int(math.ceil(len(train_images) / BATCH_SIZE))
-    TRANSITION_SPEED = 1 / steps_per_epoch * EPOCHS_PER_SIZE
+    TRANSITION_SPEED = 1 / (steps_per_epoch * EPOCHS_PER_SIZE)
 
     # Start training the model.
     history = wgan.fit(train_images, batch_size=BATCH_SIZE, epochs=TOTAL_EPOCHS, callbacks=[cbk])
