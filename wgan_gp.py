@@ -61,15 +61,15 @@ img_shape_config = [
 ]
 
 IMG_SHAPE = (4, 4, 1)
-EPOCHS_PER_SIZE = 20
+EPOCHS_PER_SIZE = 10
 TOTAL_EPOCHS = EPOCHS_PER_SIZE * ((len(img_shape_config)-1) * 2 + 1)
 BATCH_SIZE = 16
 FILTER_DEPTH = 4
 CURRENT_SIZE = 0
-CURRENT_TRANSITION = tf.Variable(0.0)
+CURRENT_TRANSITION = tf.Variable(1.0, trainable=False)
 TRANSITION_SPEED = 0.0
 IS_TRANSITION = False
-
+ALLOW_IMAGE = False
 
 # Size of the noise vector
 noise_dim = 512
@@ -104,14 +104,17 @@ def lerp(a, b, t):
     return a + (b - a) * t
 
 
+constraint = tf.keras.constraints.max_norm(1.0)
+initializer = tf.keras.initializers.RandomNormal(stddev=0.02)
+
+
 def conv_block(x, depth, strides, kernel_size, depth_multiplier=2, weights=None):
-    l_1 = layers.Conv2D(FILTER_DEPTH * depth, kernel_size=max(3, kernel_size - 1), strides=1, padding="same", use_bias=True)
+    l_1 = layers.Conv2D(FILTER_DEPTH * depth, kernel_size=max(3, kernel_size - 1), kernel_constraint=constraint, kernel_initializer=initializer, strides=1, padding="same")
     x = l_1(x)
     if weights:
         l_1.set_weights(weights[0])
     x = layers.LeakyReLU(0.2)(x)
-    l_2 = layers.Conv2D(FILTER_DEPTH * depth * depth_multiplier, kernel_size=kernel_size, strides=1, padding="same",
-                      use_bias=True)
+    l_2 = layers.Conv2D(FILTER_DEPTH * depth * depth_multiplier, kernel_size=kernel_size, kernel_constraint=constraint, kernel_initializer=initializer, strides=1, padding="same")
     x = l_2(x)
     if weights:
         l_2.set_weights(weights[1])
@@ -122,12 +125,15 @@ def conv_block(x, depth, strides, kernel_size, depth_multiplier=2, weights=None)
 
 def d_transition_block(x, depth, strides, kernel_size, depth_multiplier=2, weights=None):
     y = layers.AveragePooling2D(strides)(x)
-    y = layers.Conv2D(FILTER_DEPTH * depth * depth_multiplier, kernel_size=1, strides=1, padding="same")(y)
+    old_exit = layers.Conv2D(FILTER_DEPTH * depth * depth_multiplier, kernel_size=1, kernel_constraint=constraint, kernel_initializer=initializer, strides=1, padding="same")
+    y = old_exit(y)
+    if weights:
+        old_exit.set_weights(weights)
     y = layers.LeakyReLU(0.2)(y)
 
-    x = layers.Conv2D(FILTER_DEPTH * depth, kernel_size=1, strides=1, padding="same")(x)
+    x = layers.Conv2D(FILTER_DEPTH * depth, kernel_size=1, kernel_constraint=constraint, kernel_initializer=initializer, strides=1, padding="same")(x)
     x = layers.LeakyReLU(0.2)(x)
-    x = conv_block(x, depth, strides, kernel_size, depth_multiplier, weights)
+    x = conv_block(x, depth, strides, kernel_size, depth_multiplier)
 
     x = lerp(y, x, CURRENT_TRANSITION)
     return x
@@ -147,7 +153,7 @@ d_layer_config = [
 def get_discriminator_model():
     img_input = layers.Input(shape=IMG_SHAPE)
 
-    x = layers.Conv2D(FILTER_DEPTH * 128, kernel_size=1, strides=1, padding="same")(img_input)
+    x = layers.Conv2D(FILTER_DEPTH * 128, kernel_size=1, kernel_constraint=constraint, kernel_initializer=initializer, strides=1, padding="same")(img_input)
     x = layers.LeakyReLU(0.2)(x)
 
     x = conv_block(x, 128, 4, 4, 1)
@@ -160,25 +166,29 @@ def get_discriminator_model():
 
 def deconv_block(x, depth, strides, kernel_size):
     x = layers.UpSampling2D(strides)(x)
-    x = layers.Conv2D(filters=FILTER_DEPTH * depth, kernel_size=kernel_size, strides=1, padding="same")(x)
+    x = layers.Conv2D(filters=FILTER_DEPTH * depth, kernel_size=kernel_size, kernel_constraint=constraint, kernel_initializer=initializer, strides=1, padding="same")(x)
     x = layers.LeakyReLU(0.2)(x)
     x = pixel_norm(x)
-    x = layers.Conv2D(filters=FILTER_DEPTH * depth, kernel_size=max(3, kernel_size - 1), strides=1, padding="same")(x)
+    x = layers.Conv2D(filters=FILTER_DEPTH * depth, kernel_size=max(3, kernel_size - 1), kernel_constraint=constraint, kernel_initializer=initializer, strides=1, padding="same")(x)
     x = layers.LeakyReLU(0.2)(x)
     x = pixel_norm(x)
     return x
 
 
-def g_transition_block(x, depth, strides, kernel_size):
-    y = layers.UpSampling2D(strides)(x)
-    x = deconv_block(x, depth, strides, kernel_size)
-    x = layers.Conv2D(filters=1, kernel_size=1, strides=1, padding="same")(x)
-    x = layers.Activation("linear")(x)
-
-    y = layers.Conv2D(filters=1, kernel_size=1, strides=1, padding="same")(y)
+def g_transition_block(x, depth, strides, kernel_size, weights=None):
+    old_exit = layers.Conv2D(filters=1, kernel_size=1, kernel_constraint=constraint, kernel_initializer=initializer, strides=1, padding="same")
+    y = old_exit(x)
+    if weights:
+        old_exit.set_weights(weights)
+    y = layers.UpSampling2D(strides)(y)
     y = layers.Activation("linear")(y)
 
+    x = deconv_block(x, depth, strides, kernel_size)
+    x = layers.Conv2D(filters=1, kernel_size=1, kernel_constraint=constraint, kernel_initializer=initializer, strides=1, padding="same")(x)
+    x = layers.Activation("linear")(x)
+
     x = lerp(y, x, CURRENT_TRANSITION)
+    # x = layers.Activation("linear")(x)
     return x
 
 
@@ -198,7 +208,7 @@ def get_generator_model():
     x = layers.Reshape((1, 1, FILTER_DEPTH * 128))(noise)
 
     x = deconv_block(x, 128, 4, 4)
-    x = layers.Conv2D(filters=1, kernel_size=1, strides=1, padding="same")(x)
+    x = layers.Conv2D(filters=1, kernel_size=1, kernel_constraint=constraint, kernel_initializer=initializer, strides=1, padding="same")(x)
     x = layers.Activation("linear")(x)
     """x = deconv_block(x, 128, 2, 3)
     x = deconv_block(x, 64, 2, 3)
@@ -278,20 +288,13 @@ class WGAN(keras.Model):
         # Get the batch size
         batch_size = tf.shape(real_images)[0]
 
-        if IS_TRANSITION:
-            small_images = tf.image.resize(real_images, (int(IMG_SHAPE[0]/2), int(IMG_SHAPE[1]/2)))
-            small_images = tf.image.resize(small_images, IMG_SHAPE[:2], method=tf.image.ResizeMethod.NEAREST_NEIGHBOR)
+        small_images = tf.image.resize(real_images, (int(IMG_SHAPE[0]/2), int(IMG_SHAPE[1]/2)))
+        small_images = tf.image.resize(small_images, IMG_SHAPE[:2], method=tf.image.ResizeMethod.NEAREST_NEIGHBOR)
 
-        if IMG_SHAPE[0] != img_shape_config[-1][0]:
-            real_images = tf.image.resize(real_images, IMG_SHAPE[:2])
+        #if IMG_SHAPE[0] != img_shape_config[-1][0]:
+        real_images = tf.image.resize(real_images, IMG_SHAPE[:2])
 
-        """out = (tf.gather(small_img, 0) * 127.5) + 127.5
-        out = tf.cast(out, tf.uint8)
-        out = tf.image.encode_png(out)
-        tf.io.write_file("test_s.png", out)"""
-        if IS_TRANSITION:
-            real_images = lerp(small_images, real_images, CURRENT_TRANSITION)
-
+        real_images = lerp(small_images, real_images, CURRENT_TRANSITION)
         # For each batch, we are going to perform the
         # following steps as laid out in the original paper:
         # 1. Train the generator and get the generator loss
@@ -367,10 +370,15 @@ class GANMonitor(keras.callbacks.Callback):
         self.num_img = num_img
         self.latent_dim = latent_dim
         self.random_latent_vectors = tf.random.normal(shape=(self.num_img, self.latent_dim), seed=3342934)
+        self.stage = 0
+
+    def next(self):
+        self.stage += 1
 
     def on_train_batch_end(self, step, logs=None):
         if IS_TRANSITION:
             CURRENT_TRANSITION.assign_add(TRANSITION_SPEED)
+
         """if step % 128 != 0:
             return
 
@@ -394,16 +402,21 @@ class GANMonitor(keras.callbacks.Callback):
             if current_step % 2 == 0:
                 print("Changing to non-transition")
                 IS_TRANSITION = False
+                CURRENT_TRANSITION.assign(1.0)
                 self.transition_discriminator(current_network)
                 self.transition_generator(current_network)
             else:
                 print("Changing to transition")
                 IS_TRANSITION = True
+                global ALLOW_IMAGE
+                ALLOW_IMAGE = True
                 global IMG_SHAPE
                 IMG_SHAPE = img_shape_config[current_network]
                 CURRENT_TRANSITION.assign(0.0)
                 self.extend_discriminator(current_network)
                 self.extend_generator(current_network)
+            print("Generator Trainable Variables: " + str(len(self.model.generator.trainable_variables)))
+            print("Discriminator Trainable Variables: " + str(len(self.model.discriminator.trainable_variables)))
 
 
     def on_epoch_end(self, epoch, logs=None):
@@ -417,13 +430,15 @@ class GANMonitor(keras.callbacks.Callback):
             img.save("output\\{epoch}_heightmap_{i}.png".format(i=i, epoch=epoch))
 
         # Saving network only possible when not in resolution transition phase
-        if not IS_TRANSITION:
-            self.model.generator.save("models\\Generator_{epoch}.h5".format(epoch=epoch))
-            self.model.discriminator.save("models\\Discriminator.h5")
+        # if not IS_TRANSITION:
+            # self.model.generator.save("models\\Generator_{epoch}.h5".format(epoch=epoch))
+            # self.model.discriminator.save("models\\Discriminator.h5")
 
     def extend_generator(self, config):
         config = g_layer_config[config]
-        self.model.generator = keras.models.Model(self.model.generator.input, g_transition_block(self.model.generator.layers[-3].output, config[0], config[1], config[2]), name="new_generator")
+        print(self.model.generator.layers[-2].name)
+        weights = self.model.generator.layers[-2].get_weights()
+        self.model.generator = keras.models.Model(self.model.generator.input, g_transition_block(self.model.generator.layers[-3].output, config[0], config[1], config[2], weights=weights), name="new_generator")
         self.model.generator.summary()
 
     def transition_generator(self, config):
@@ -432,11 +447,15 @@ class GANMonitor(keras.callbacks.Callback):
 
     def extend_discriminator(self, config):
         config = d_layer_config[config]
+        print("Disc: " + self.model.discriminator.layers[1].name)
+        weights = self.model.discriminator.layers[1].get_weights()
         d_layers = self.model.discriminator.layers[3:]
         input_layer = layers.Input(shape=IMG_SHAPE)
-        x = d_transition_block(input_layer, config[0], config[1], config[2], config[3])
+        x = d_transition_block(input_layer, config[0], config[1], config[2], config[3], weights)
         for layer in d_layers:
+            weight = layer.get_weights()
             x = layer(x)
+            layer.set_weights(weight)
         self.model.discriminator = keras.models.Model(input_layer, x, name="new_discriminator")
         self.model.discriminator.summary()
 
@@ -451,13 +470,15 @@ class GANMonitor(keras.callbacks.Callback):
         weights.append(self.model.discriminator.layers[3].get_weights())
         weights.append(self.model.discriminator.layers[6].get_weights())
         input_layer = layers.Input(shape=IMG_SHAPE)
-        from_BW = layers.Conv2D(FILTER_DEPTH * config[0], kernel_size=1, strides=1, padding="same")
+        from_BW = layers.Conv2D(FILTER_DEPTH * config[0], kernel_size=1, kernel_constraint=constraint, kernel_initializer=initializer, strides=1, padding="same")
         x = from_BW(input_layer)
         from_BW.set_weights(weights[0])
         x = layers.LeakyReLU(0.2)(x)
-        x = conv_block(x, config[0], config[1], config[2], config[3], weights=weights)
+        x = conv_block(x, config[0], config[1], config[2], config[3], weights=weights[1:])
         for layer in d_layers:
+            weight = layer.get_weights()
             x = layer(x)
+            layer.set_weights(weight)
         self.model.discriminator = keras.models.Model(input_layer, x, name="new_discriminator")
         self.model.discriminator.summary()
 
@@ -482,11 +503,11 @@ def generator_loss(fake_img):
 # learning_rate=0.0002, beta_1=0.0, beta_2=0.7233293237969016, epsilon=1e-8
 # learning_rate=0.0002, beta_1=0.0, beta_2=0.99, epsilon=1e-8
 generator_optimizer = keras.optimizers.Adam(
-    learning_rate=0.0002, beta_1=0.0, beta_2=0.99, epsilon=1e-8
+    learning_rate=0.001, beta_1=0.0, beta_2=0.99, epsilon=1e-8
 )
 
 discriminator_optimizer = keras.optimizers.Adam(
-    learning_rate=0.0002, beta_1=0.0, beta_2=0.99, epsilon=1e-8
+    learning_rate=0.001, beta_1=0.0, beta_2=0.99, epsilon=1e-8
 )
 
 if __name__ == "__main__":
