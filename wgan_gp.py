@@ -370,7 +370,7 @@ class GANMonitor(keras.callbacks.Callback):
         self.num_img = num_img
         self.latent_dim = latent_dim
         self.random_latent_vectors = tf.random.normal(shape=(self.num_img, self.latent_dim), seed=3342934)
-        self.stage = 0
+        self.stage = 1
 
     def next(self):
         self.stage += 1
@@ -392,7 +392,7 @@ class GANMonitor(keras.callbacks.Callback):
             img.save("output\\{epoch}_heightmap_{i}.png".format(i=i, epoch=step))"""
 
     def on_epoch_begin(self, epoch, logs=None):
-        if epoch == 0:
+        """if epoch == 0:
             return
         if epoch % EPOCHS_PER_SIZE == 0:
             current_step = int(epoch / EPOCHS_PER_SIZE)
@@ -416,7 +416,7 @@ class GANMonitor(keras.callbacks.Callback):
                 self.extend_discriminator(current_network)
                 self.extend_generator(current_network)
             print("Generator Trainable Variables: " + str(len(self.model.generator.trainable_variables)))
-            print("Discriminator Trainable Variables: " + str(len(self.model.discriminator.trainable_variables)))
+            print("Discriminator Trainable Variables: " + str(len(self.model.discriminator.trainable_variables)))"""
 
 
     def on_epoch_end(self, epoch, logs=None):
@@ -427,8 +427,32 @@ class GANMonitor(keras.callbacks.Callback):
         for i in range(self.num_img):
             img = generated_images[i].numpy()
             img = keras.preprocessing.image.array_to_img(img)
-            img.save("output\\{epoch}_heightmap_{i}.png".format(i=i, epoch=epoch))
+            img.save("output\\{epoch}_heightmap_{i}.png".format(i=i, epoch=(epoch + self.stage * EPOCHS_PER_SIZE)))
 
+        if epoch == 0:
+            return
+
+        if epoch % (EPOCHS_PER_SIZE - 1) == 0:
+            #current_step = int(epoch / EPOCHS_PER_SIZE)
+            current_network = int(math.ceil(self.stage / 2))
+            print("Changing networks on stage " + str(current_network))
+            global IS_TRANSITION
+            if self.stage % 2 == 0:
+                print("Changing to non-transition")
+                IS_TRANSITION = False
+                CURRENT_TRANSITION.assign(1.0)
+                self.transition_discriminator(current_network)
+                self.transition_generator(current_network)
+            else:
+                print("Changing to transition")
+                IS_TRANSITION = True
+                global ALLOW_IMAGE
+                ALLOW_IMAGE = True
+                global IMG_SHAPE
+                IMG_SHAPE = img_shape_config[current_network]
+                CURRENT_TRANSITION.assign(0.0)
+                self.extend_discriminator(current_network)
+                self.extend_generator(current_network)
         # Saving network only possible when not in resolution transition phase
         # if not IS_TRANSITION:
             # self.model.generator.save("models\\Generator_{epoch}.h5".format(epoch=epoch))
@@ -538,7 +562,16 @@ if __name__ == "__main__":
     TRANSITION_SPEED = 1 / (steps_per_epoch * EPOCHS_PER_SIZE)
 
     # Start training the model.
-    history = wgan.fit(train_images, batch_size=BATCH_SIZE, epochs=TOTAL_EPOCHS, callbacks=[cbk])
+    for i in range(int(TOTAL_EPOCHS / EPOCHS_PER_SIZE)):
+        wgan.fit(train_images, batch_size=BATCH_SIZE, epochs=EPOCHS_PER_SIZE, callbacks=[cbk])
+        wgan = WGAN(discriminator=wgan.discriminator, generator=wgan.generator, latent_dim=noise_dim, discriminator_extra_steps=1)
+        wgan.compile(
+            d_optimizer=discriminator_optimizer,
+            g_optimizer=generator_optimizer,
+            g_loss_fn=generator_loss,
+            d_loss_fn=discriminator_loss,
+        )
+        cbk.next()
     #wgan.fit(train_images, batch_size=int(BATCH_SIZE / 2), epochs=epochs, callbacks=[cbk])
     #wgan.fit(train_images, batch_size=int(BATCH_SIZE / 4), epochs=epochs, callbacks=[cbk])
     #wgan.fit(train_images, batch_size=int(BATCH_SIZE / 8), epochs=epochs, callbacks=[cbk])
