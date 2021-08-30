@@ -37,6 +37,8 @@ import cv2
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
+from keras import backend
+import gc
 
 
 """## Prepare the Fashion-MNIST data
@@ -63,7 +65,7 @@ img_shape_config = [
 IMG_SHAPE = (4, 4, 1)
 EPOCHS_PER_SIZE = 10
 TOTAL_EPOCHS = EPOCHS_PER_SIZE * ((len(img_shape_config)-1) * 2 + 1)
-BATCH_SIZE = 16
+BATCH_SIZE = 128
 FILTER_DEPTH = 4
 CURRENT_SIZE = 0
 CURRENT_TRANSITION = tf.Variable(1.0, trainable=False)
@@ -74,26 +76,35 @@ ALLOW_IMAGE = False
 # Size of the noise vector
 noise_dim = 512
 
-train_images = []
-# 86176
-for index in range(1024):
-    image = cv2.imread("data\\out\\" + str(index) + ".png", cv2.IMREAD_GRAYSCALE)
-    train_images.append(image)
-    train_images.append(cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE))
-    train_images.append(cv2.rotate(image, cv2.ROTATE_180))
-    train_images.append(cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE))
-    image = cv2.flip(image, 1)
-    train_images.append(image)
-    train_images.append(cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE))
-    train_images.append(cv2.rotate(image, cv2.ROTATE_180))
-    train_images.append(cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE))
 
-train_images = np.array(train_images, dtype="float32")
-train_images = train_images.reshape(train_images.shape[0], *(256, 256, 1))
-print(train_images.shape)
-train_images = (train_images - 127.5) / 127.5
-np.random.seed(3213)
-np.random.shuffle(train_images)
+def get_images(res):
+    # 86176
+    images = []
+    for index in range(1024):
+        image = cv2.imread("data\\out\\" + str(index) + ".png", cv2.IMREAD_GRAYSCALE)
+        if res != 256:
+            image = cv2.resize(image, (res, res))
+        images.append(image)
+        images.append(cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE))
+        images.append(cv2.rotate(image, cv2.ROTATE_180))
+        images.append(cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE))
+        image = cv2.flip(image, 1)
+        images.append(image)
+        images.append(cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE))
+        images.append(cv2.rotate(image, cv2.ROTATE_180))
+        images.append(cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE))
+        del image
+
+    images = np.array(images, dtype="float32")
+    images = images.reshape(images.shape[0], *(res, res, 1))
+    print(images.shape)
+    images = (images - 127.5) / 127.5
+    np.random.seed(3213)
+    np.random.shuffle(images)
+    return images
+
+
+train_images = get_images(IMG_SHAPE[0])
 
 
 def pixel_norm(x, epsilon=1e-8):
@@ -104,17 +115,91 @@ def lerp(a, b, t):
     return a + (b - a) * t
 
 
-constraint = tf.keras.constraints.max_norm(1.0)
-initializer = tf.keras.initializers.RandomNormal(stddev=0.02)
+class EqualizedConv2D(layers.Conv2D):
+    def __init__(self, *args, **kwargs):
+        self.scale = 1.0
+        super(EqualizedConv2D, self).__init__(*args, **kwargs)
+
+    def build(self, input_shape):
+        fan_in = np.prod(input_shape[1:-1])
+        self.scale = np.sqrt(2/fan_in)
+        return super(EqualizedConv2D, self).build(input_shape)
+
+    def call(self, inputs):
+        outputs = backend.conv2d(inputs, self.kernel*self.scale, strides=self.strides, padding=self.padding, data_format=self.data_format, dilation_rate=self.dilation_rate)
+        if self.use_bias:
+            outputs = backend.bias_add(outputs, self.bias, data_format=self.data_format)
+        if self.activation is not None:
+            return self.activation(outputs)
+        return outputs
+
+
+class EqualizedDense(layers.Dense):
+    def __init__(self, *args, **kwargs):
+        self.scale = 1.0
+        super(EqualizedDense, self).__init__(*args, **kwargs)
+
+    def build(self, input_shape):
+        fan_in = np.prod(input_shape[1:-1])
+        self.scale = np.sqrt(1/fan_in)
+        return super(EqualizedDense, self).build(input_shape)
+
+    def call(self, inputs):
+        outputs = backend.dot(inputs, self.kernel*self.scale)
+        if self.use_bias:
+            outputs = backend.bias_add(outputs, self.bias, data_format='channels_last')
+        if self.activation is not None:
+            return self.activation(outputs)
+        return outputs
+
+
+class MinibatchStdev(layers.Layer):
+    # initialize the layer
+    def __init__(self, **kwargs):
+        super(MinibatchStdev, self).__init__(**kwargs)
+
+    # perform the operation
+    def call(self, inputs, **kwargs):
+        # calculate the mean value for each pixel across channels
+        mean = backend.mean(inputs, axis=0, keepdims=True)
+        # calculate the squared differences between pixel values and mean
+        squ_diffs = backend.square(inputs - mean)
+        # calculate the average of the squared differences (variance)
+        mean_sq_diff = backend.mean(squ_diffs, axis=0, keepdims=True)
+        # add a small value to avoid a blow-up when we calculate stdev
+        mean_sq_diff += 1e-8
+        # square root of the variance (stdev)
+        stdev = backend.sqrt(mean_sq_diff)
+        # calculate the mean standard deviation across each pixel coord
+        mean_pix = backend.mean(stdev, keepdims=True)
+        # scale this up to be the size of one input feature map for each sample
+        shape = backend.shape(inputs)
+        output = backend.tile(mean_pix, (shape[0], shape[1], shape[2], 1))
+        # concatenate with the output
+        combined = backend.concatenate([inputs, output], axis=-1)
+        return combined
+
+    # define the output shape of the layer
+    def compute_output_shape(self, input_shape):
+        # create a copy of the input shape as a list
+        input_shape = list(input_shape)
+        # add one to the channel dimension (assume channels-last)
+        input_shape[-1] += 1
+        # convert list to a tuple
+        return tuple(input_shape)
+
+
+# constraint = tf.keras.constraints.max_norm(1.0)
+initializer = tf.keras.initializers.RandomNormal(0, 1)
 
 
 def conv_block(x, depth, strides, kernel_size, depth_multiplier=2, weights=None):
-    l_1 = layers.Conv2D(FILTER_DEPTH * depth, kernel_size=max(3, kernel_size - 1), kernel_constraint=constraint, kernel_initializer=initializer, strides=1, padding="same")
+    l_1 = EqualizedConv2D(FILTER_DEPTH * depth, kernel_size=max(3, kernel_size - 1), kernel_initializer=initializer, strides=1, padding="same")
     x = l_1(x)
     if weights:
         l_1.set_weights(weights[0])
     x = layers.LeakyReLU(0.2)(x)
-    l_2 = layers.Conv2D(FILTER_DEPTH * depth * depth_multiplier, kernel_size=kernel_size, kernel_constraint=constraint, kernel_initializer=initializer, strides=1, padding="same")
+    l_2 = EqualizedConv2D(FILTER_DEPTH * depth * depth_multiplier, kernel_size=kernel_size, kernel_initializer=initializer, strides=1, padding="same")
     x = l_2(x)
     if weights:
         l_2.set_weights(weights[1])
@@ -125,13 +210,13 @@ def conv_block(x, depth, strides, kernel_size, depth_multiplier=2, weights=None)
 
 def d_transition_block(x, depth, strides, kernel_size, depth_multiplier=2, weights=None):
     y = layers.AveragePooling2D(strides)(x)
-    old_exit = layers.Conv2D(FILTER_DEPTH * depth * depth_multiplier, kernel_size=1, kernel_constraint=constraint, kernel_initializer=initializer, strides=1, padding="same")
+    old_exit = EqualizedConv2D(FILTER_DEPTH * depth * depth_multiplier, kernel_size=1, kernel_initializer=initializer, strides=1, padding="same")
     y = old_exit(y)
     if weights:
         old_exit.set_weights(weights)
     y = layers.LeakyReLU(0.2)(y)
 
-    x = layers.Conv2D(FILTER_DEPTH * depth, kernel_size=1, kernel_constraint=constraint, kernel_initializer=initializer, strides=1, padding="same")(x)
+    x = EqualizedConv2D(FILTER_DEPTH * depth, kernel_size=1, kernel_initializer=initializer, strides=1, padding="same")(x)
     x = layers.LeakyReLU(0.2)(x)
     x = conv_block(x, depth, strides, kernel_size, depth_multiplier)
 
@@ -153,42 +238,43 @@ d_layer_config = [
 def get_discriminator_model():
     img_input = layers.Input(shape=IMG_SHAPE)
 
-    x = layers.Conv2D(FILTER_DEPTH * 128, kernel_size=1, kernel_constraint=constraint, kernel_initializer=initializer, strides=1, padding="same")(img_input)
+    x = EqualizedConv2D(FILTER_DEPTH * 128, kernel_size=1, kernel_initializer=initializer, strides=1, padding="same")(img_input)
     x = layers.LeakyReLU(0.2)(x)
 
-    x = conv_block(x, 128, 4, 4, 1)
+    x = MinibatchStdev()(x)
 
-    x = layers.Dense(1)(x)
+    x = conv_block(x, *d_layer_config[0])
+
+    x = EqualizedDense(1)(x)
 
     d_model = keras.models.Model(img_input, x, name="discriminator")
     return d_model
 
 
 def deconv_block(x, depth, strides, kernel_size):
-    x = layers.UpSampling2D(strides)(x)
-    x = layers.Conv2D(filters=FILTER_DEPTH * depth, kernel_size=kernel_size, kernel_constraint=constraint, kernel_initializer=initializer, strides=1, padding="same")(x)
+    x = layers.UpSampling2D(strides, interpolation="bilinear")(x)
+    x = EqualizedConv2D(FILTER_DEPTH * depth, kernel_size=kernel_size, kernel_initializer=initializer, strides=1, padding="same")(x)
     x = layers.LeakyReLU(0.2)(x)
     x = pixel_norm(x)
-    x = layers.Conv2D(filters=FILTER_DEPTH * depth, kernel_size=max(3, kernel_size - 1), kernel_constraint=constraint, kernel_initializer=initializer, strides=1, padding="same")(x)
+    x = EqualizedConv2D(FILTER_DEPTH * depth, kernel_size=max(3, kernel_size - 1), kernel_initializer=initializer, strides=1, padding="same")(x)
     x = layers.LeakyReLU(0.2)(x)
     x = pixel_norm(x)
     return x
 
 
 def g_transition_block(x, depth, strides, kernel_size, weights=None):
-    old_exit = layers.Conv2D(filters=1, kernel_size=1, kernel_constraint=constraint, kernel_initializer=initializer, strides=1, padding="same")
+    old_exit = EqualizedConv2D(filters=1, kernel_size=1, kernel_initializer=initializer, strides=1, padding="same")
     y = old_exit(x)
     if weights:
         old_exit.set_weights(weights)
-    y = layers.UpSampling2D(strides)(y)
+    y = layers.UpSampling2D(strides, interpolation="bilinear")(y)
     y = layers.Activation("linear")(y)
 
     x = deconv_block(x, depth, strides, kernel_size)
-    x = layers.Conv2D(filters=1, kernel_size=1, kernel_constraint=constraint, kernel_initializer=initializer, strides=1, padding="same")(x)
+    x = EqualizedConv2D(filters=1, kernel_size=1, kernel_initializer=initializer, strides=1, padding="same")(x)
     x = layers.Activation("linear")(x)
 
     x = lerp(y, x, CURRENT_TRANSITION)
-    # x = layers.Activation("linear")(x)
     return x
 
 
@@ -207,16 +293,9 @@ def get_generator_model():
     noise = layers.Input(shape=(noise_dim,))
     x = layers.Reshape((1, 1, FILTER_DEPTH * 128))(noise)
 
-    x = deconv_block(x, 128, 4, 4)
-    x = layers.Conv2D(filters=1, kernel_size=1, kernel_constraint=constraint, kernel_initializer=initializer, strides=1, padding="same")(x)
+    x = deconv_block(x, *g_layer_config[0])
+    x = EqualizedConv2D(filters=1, kernel_size=1, kernel_initializer=initializer, strides=1, padding="same")(x)
     x = layers.Activation("linear")(x)
-    """x = deconv_block(x, 128, 2, 3)
-    x = deconv_block(x, 64, 2, 3)
-    x = deconv_block(x, 32, 2, 3)
-    x = deconv_block(x, 16, 2, 3)
-    x = deconv_block(x, 8, 2, 3)"""
-
-    #x = g_transition_block(x, 4, 2, 3) #256
 
     g_model = keras.models.Model(noise, x, name="generator")
     return g_model
@@ -288,13 +367,16 @@ class WGAN(keras.Model):
         # Get the batch size
         batch_size = tf.shape(real_images)[0]
 
-        small_images = tf.image.resize(real_images, (int(IMG_SHAPE[0]/2), int(IMG_SHAPE[1]/2)))
-        small_images = tf.image.resize(small_images, IMG_SHAPE[:2], method=tf.image.ResizeMethod.NEAREST_NEIGHBOR)
-
+        if IS_TRANSITION:
+            small_images = tf.image.resize(real_images, (int(IMG_SHAPE[0]/2), int(IMG_SHAPE[1]/2)))
+            small_images = tf.image.resize(small_images, IMG_SHAPE[:2], method=tf.image.ResizeMethod.BILINEAR)
+            real_images = lerp(small_images, real_images, CURRENT_TRANSITION)
         #if IMG_SHAPE[0] != img_shape_config[-1][0]:
-        real_images = tf.image.resize(real_images, IMG_SHAPE[:2])
+        #    real_images = tf.image.resize(real_images, IMG_SHAPE[:2])
 
-        real_images = lerp(small_images, real_images, CURRENT_TRANSITION)
+        #if IS_TRANSITION:
+
+
         # For each batch, we are going to perform the
         # following steps as laid out in the original paper:
         # 1. Train the generator and get the generator loss
@@ -361,10 +443,6 @@ class WGAN(keras.Model):
 
 
 class GANMonitor(keras.callbacks.Callback):
-    """
-    TODO: Fix to_RBG (Upsampling after to_RBG)
-    TODO: Weight saving for to_RBG/from_RBG
-    """
 
     def __init__(self, num_img=6, latent_dim=128):
         self.num_img = num_img
@@ -378,65 +456,37 @@ class GANMonitor(keras.callbacks.Callback):
     def on_train_batch_end(self, step, logs=None):
         if IS_TRANSITION:
             CURRENT_TRANSITION.assign_add(TRANSITION_SPEED)
-
-        """if step % 128 != 0:
-            return
-
-        generated_images = self.model.generator(self.random_latent_vectors)
-        generated_images = (generated_images * 127.5) + 127.5
-        #CURRENT_TRANSITION.assign_add(128 / 512)
-        print(CURRENT_TRANSITION)
-        for i in range(self.num_img):
-            img = generated_images[i].numpy()
-            img = keras.preprocessing.image.array_to_img(img)
-            img.save("output\\{epoch}_heightmap_{i}.png".format(i=i, epoch=step))"""
-
-    def on_epoch_begin(self, epoch, logs=None):
-        """if epoch == 0:
-            return
-        if epoch % EPOCHS_PER_SIZE == 0:
-            current_step = int(epoch / EPOCHS_PER_SIZE)
-            current_network = int(math.ceil(current_step / 2))
-            print("Changing networks on stage " + str(current_network))
-            global IS_TRANSITION
-            if current_step % 2 == 0:
-                print("Changing to non-transition")
-                IS_TRANSITION = False
+            if CURRENT_TRANSITION > 1.0:
                 CURRENT_TRANSITION.assign(1.0)
-                self.transition_discriminator(current_network)
-                self.transition_generator(current_network)
-            else:
-                print("Changing to transition")
-                IS_TRANSITION = True
-                global ALLOW_IMAGE
-                ALLOW_IMAGE = True
-                global IMG_SHAPE
-                IMG_SHAPE = img_shape_config[current_network]
-                CURRENT_TRANSITION.assign(0.0)
-                self.extend_discriminator(current_network)
-                self.extend_generator(current_network)
-            print("Generator Trainable Variables: " + str(len(self.model.generator.trainable_variables)))
-            print("Discriminator Trainable Variables: " + str(len(self.model.discriminator.trainable_variables)))"""
-
 
     def on_epoch_end(self, epoch, logs=None):
+        global IS_TRANSITION
         print(CURRENT_TRANSITION)
         generated_images = self.model.generator(self.random_latent_vectors)
         generated_images = (generated_images * 127.5) + 127.5
+        current_epoch = epoch + (self.stage - 1) * EPOCHS_PER_SIZE
 
         for i in range(self.num_img):
             img = generated_images[i].numpy()
             img = keras.preprocessing.image.array_to_img(img)
-            img.save("output\\{epoch}_heightmap_{i}.png".format(i=i, epoch=(epoch + self.stage * EPOCHS_PER_SIZE)))
+            img.save("output\\{epoch}_heightmap_{i}.png".format(i=i, epoch=current_epoch))
 
-        if epoch == 0:
+        if not IS_TRANSITION:
+            self.model.generator.save("models\\Generator_{epoch}.h5".format(epoch=current_epoch))
+            self.model.discriminator.save("models\\Discriminator.h5")
+
+        if epoch == 0 and EPOCHS_PER_SIZE != 1:
             return
 
-        if epoch % (EPOCHS_PER_SIZE - 1) == 0:
+        if self.stage >= len(img_shape_config) * 2 - 1:
+            print("Finished training network!")
+            return
+
+        if epoch == 0 or epoch % (EPOCHS_PER_SIZE - 1) == 0:
             #current_step = int(epoch / EPOCHS_PER_SIZE)
             current_network = int(math.ceil(self.stage / 2))
             print("Changing networks on stage " + str(current_network))
-            global IS_TRANSITION
+
             if self.stage % 2 == 0:
                 print("Changing to non-transition")
                 IS_TRANSITION = False
@@ -460,51 +510,46 @@ class GANMonitor(keras.callbacks.Callback):
 
     def extend_generator(self, config):
         config = g_layer_config[config]
-        print(self.model.generator.layers[-2].name)
         weights = self.model.generator.layers[-2].get_weights()
-        self.model.generator = keras.models.Model(self.model.generator.input, g_transition_block(self.model.generator.layers[-3].output, config[0], config[1], config[2], weights=weights), name="new_generator")
-        self.model.generator.summary()
+        self.model.generator = keras.models.Model(self.model.generator.input, g_transition_block(self.model.generator.layers[-3].output, *config, weights=weights), name="new_generator")
+        # self.model.generator.summary()
 
     def transition_generator(self, config):
         self.model.generator = keras.models.Model(self.model.generator.input, self.model.generator.layers[-4].output, name="new_generator")
-        self.model.generator.summary()
+        # self.model.generator.summary()
 
     def extend_discriminator(self, config):
         config = d_layer_config[config]
-        print("Disc: " + self.model.discriminator.layers[1].name)
         weights = self.model.discriminator.layers[1].get_weights()
         d_layers = self.model.discriminator.layers[3:]
         input_layer = layers.Input(shape=IMG_SHAPE)
-        x = d_transition_block(input_layer, config[0], config[1], config[2], config[3], weights)
+        x = d_transition_block(input_layer, *config, weights)
         for layer in d_layers:
             weight = layer.get_weights()
             x = layer(x)
             layer.set_weights(weight)
         self.model.discriminator = keras.models.Model(input_layer, x, name="new_discriminator")
-        self.model.discriminator.summary()
+        # self.model.discriminator.summary()
 
     def transition_discriminator(self, config):
         config = d_layer_config[config]
         d_layers = self.model.discriminator.layers[14:]
         weights = []
-        print(self.model.discriminator.layers[1].name)
-        print(self.model.discriminator.layers[3].name)
-        print(self.model.discriminator.layers[6].name)
         weights.append(self.model.discriminator.layers[1].get_weights())
         weights.append(self.model.discriminator.layers[3].get_weights())
         weights.append(self.model.discriminator.layers[6].get_weights())
         input_layer = layers.Input(shape=IMG_SHAPE)
-        from_BW = layers.Conv2D(FILTER_DEPTH * config[0], kernel_size=1, kernel_constraint=constraint, kernel_initializer=initializer, strides=1, padding="same")
+        from_BW = EqualizedConv2D(FILTER_DEPTH * config[0], kernel_size=1, kernel_initializer=initializer, strides=1, padding="same")
         x = from_BW(input_layer)
         from_BW.set_weights(weights[0])
         x = layers.LeakyReLU(0.2)(x)
-        x = conv_block(x, config[0], config[1], config[2], config[3], weights=weights[1:])
+        x = conv_block(x, *config, weights=weights[1:])
         for layer in d_layers:
             weight = layer.get_weights()
             x = layer(x)
             layer.set_weights(weight)
         self.model.discriminator = keras.models.Model(input_layer, x, name="new_discriminator")
-        self.model.discriminator.summary()
+        # self.model.discriminator.summary()
 
 
 
@@ -561,8 +606,21 @@ if __name__ == "__main__":
     steps_per_epoch = int(math.ceil(len(train_images) / BATCH_SIZE))
     TRANSITION_SPEED = 1 / (steps_per_epoch * EPOCHS_PER_SIZE)
 
+    """for i in range(len(img_shape_config)):
+        if i == 0:
+            continue
+        IMG_SHAPE = img_shape_config[i]
+        del train_images
+        gc.collect()
+        train_images = get_images(IMG_SHAPE[0])"""
+
     # Start training the model.
     for i in range(int(TOTAL_EPOCHS / EPOCHS_PER_SIZE)):
+        if IS_TRANSITION:
+            del train_images
+            gc.collect()
+            train_images = get_images(IMG_SHAPE[0])
+            BATCH_SIZE = int(BATCH_SIZE / 2)
         wgan.fit(train_images, batch_size=BATCH_SIZE, epochs=EPOCHS_PER_SIZE, callbacks=[cbk])
         wgan = WGAN(discriminator=wgan.discriminator, generator=wgan.generator, latent_dim=noise_dim, discriminator_extra_steps=1)
         wgan.compile(
@@ -572,7 +630,3 @@ if __name__ == "__main__":
             d_loss_fn=discriminator_loss,
         )
         cbk.next()
-    #wgan.fit(train_images, batch_size=int(BATCH_SIZE / 2), epochs=epochs, callbacks=[cbk])
-    #wgan.fit(train_images, batch_size=int(BATCH_SIZE / 4), epochs=epochs, callbacks=[cbk])
-    #wgan.fit(train_images, batch_size=int(BATCH_SIZE / 8), epochs=epochs, callbacks=[cbk])
-    #wgan.fit(train_images, batch_size=int(BATCH_SIZE / 16), epochs=epochs, callbacks=[cbk])
