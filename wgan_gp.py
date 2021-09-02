@@ -65,16 +65,21 @@ img_shape_config = [
 IMG_SHAPE = (4, 4, 1)
 EPOCHS_PER_SIZE = 10
 TOTAL_EPOCHS = EPOCHS_PER_SIZE * ((len(img_shape_config)-1) * 2 + 1)
-BATCH_SIZE = 128
+BATCH_SIZE = 16
 FILTER_DEPTH = 4
 CURRENT_SIZE = 0
 CURRENT_TRANSITION = tf.Variable(1.0, trainable=False)
 TRANSITION_SPEED = 0.0
 IS_TRANSITION = False
 ALLOW_IMAGE = False
+DO_GROWTH = True
+DO_SAVE = False
 
 # Size of the noise vector
 noise_dim = 512
+
+if not DO_GROWTH:
+    IMG_SHAPE = (256, 256, 1)
 
 
 def get_images(res):
@@ -121,12 +126,16 @@ class EqualizedConv2D(layers.Conv2D):
         super(EqualizedConv2D, self).__init__(*args, **kwargs)
 
     def build(self, input_shape):
-        fan_in = np.prod(input_shape[1:-1])
+        super().build(input_shape)
+        fan_in = np.product([int(val) for val in input_shape[1:]])
         self.scale = np.sqrt(2/fan_in)
         return super(EqualizedConv2D, self).build(input_shape)
 
     def call(self, inputs):
-        outputs = backend.conv2d(inputs, self.kernel*self.scale, strides=self.strides, padding=self.padding, data_format=self.data_format, dilation_rate=self.dilation_rate)
+        outputs = backend.conv2d(inputs, self.kernel * self.scale, strides=self.strides, padding=self.padding,
+                                 data_format=self.data_format, dilation_rate=self.dilation_rate)
+        if not DO_GROWTH:
+            outputs = backend.conv2d(inputs, self.kernel, strides=self.strides, padding=self.padding, data_format=self.data_format, dilation_rate=self.dilation_rate)
         if self.use_bias:
             outputs = backend.bias_add(outputs, self.bias, data_format=self.data_format)
         if self.activation is not None:
@@ -135,17 +144,21 @@ class EqualizedConv2D(layers.Conv2D):
 
 
 class EqualizedDense(layers.Dense):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, gain=1, **kwargs):
         self.scale = 1.0
+        self.gain = gain
         super(EqualizedDense, self).__init__(*args, **kwargs)
 
     def build(self, input_shape):
-        fan_in = np.prod(input_shape[1:-1])
-        self.scale = np.sqrt(1/fan_in)
+        super().build(input_shape)
+        fan_in = np.product([int(val) for val in input_shape[1:]])
+        self.scale = self.gain / np.sqrt(fan_in)
         return super(EqualizedDense, self).build(input_shape)
 
     def call(self, inputs):
         outputs = backend.dot(inputs, self.kernel*self.scale)
+        if not DO_GROWTH:
+            outputs = backend.dot(inputs, self.kernel)
         if self.use_bias:
             outputs = backend.bias_add(outputs, self.bias, data_format='channels_last')
         if self.activation is not None:
@@ -191,20 +204,24 @@ class MinibatchStdev(layers.Layer):
 
 # constraint = tf.keras.constraints.max_norm(1.0)
 initializer = tf.keras.initializers.RandomNormal(0, 1)
+if not DO_GROWTH:
+    initializer = tf.keras.initializers.GlorotUniform()
 
 
-def conv_block(x, depth, strides, kernel_size, depth_multiplier=2, weights=None):
+def conv_block(x, depth, strides, kernel_size, depth_multiplier=2, weights=None, downsample=True):
     l_1 = EqualizedConv2D(FILTER_DEPTH * depth, kernel_size=max(3, kernel_size - 1), kernel_initializer=initializer, strides=1, padding="same")
     x = l_1(x)
     if weights:
         l_1.set_weights(weights[0])
     x = layers.LeakyReLU(0.2)(x)
-    l_2 = EqualizedConv2D(FILTER_DEPTH * depth * depth_multiplier, kernel_size=kernel_size, kernel_initializer=initializer, strides=1, padding="same")
-    x = l_2(x)
-    if weights:
-        l_2.set_weights(weights[1])
-    x = layers.LeakyReLU(0.2)(x)
-    x = layers.AveragePooling2D(strides)(x)
+    if downsample:
+        l_2 = EqualizedConv2D(FILTER_DEPTH * depth * depth_multiplier, kernel_size=kernel_size,
+                              kernel_initializer=initializer, strides=1, padding="same")
+        x = l_2(x)
+        if weights:
+            l_2.set_weights(weights[1])
+        x = layers.LeakyReLU(0.2)(x)
+        x = layers.AveragePooling2D(strides)(x)
     return x
 
 
@@ -238,39 +255,59 @@ d_layer_config = [
 def get_discriminator_model():
     img_input = layers.Input(shape=IMG_SHAPE)
 
-    x = EqualizedConv2D(FILTER_DEPTH * 128, kernel_size=1, kernel_initializer=initializer, strides=1, padding="same")(img_input)
+    if not DO_GROWTH:
+        x = EqualizedConv2D(FILTER_DEPTH * 4, kernel_size=1, kernel_initializer=initializer, strides=1, padding="same")(
+            img_input)
+        x = layers.LeakyReLU(0.2)(x)
+        x = conv_block(x, *d_layer_config[6])
+        x = conv_block(x, *d_layer_config[5])
+        x = conv_block(x, *d_layer_config[4])
+        x = conv_block(x, *d_layer_config[3])
+        x = conv_block(x, *d_layer_config[2])
+        x = conv_block(x, *d_layer_config[1])
+    else:
+        x = EqualizedConv2D(FILTER_DEPTH * 128, kernel_size=1, kernel_initializer=initializer, strides=1,
+                            padding="same")(
+            img_input)
+        x = layers.LeakyReLU(0.2)(x)
+
+    if DO_GROWTH:
+        x = MinibatchStdev()(x)
+
+    x = conv_block(x, *d_layer_config[0], downsample=False)
+
+    # x = EqualizedDense(FILTER_DEPTH * 128, gain=np.sqrt(2))(x)
+    x = EqualizedConv2D(FILTER_DEPTH * 128, kernel_size=4, kernel_initializer=initializer, strides=1, padding="same")(x)
     x = layers.LeakyReLU(0.2)(x)
+    x = layers.Flatten()(x)
 
-    x = MinibatchStdev()(x)
-
-    x = conv_block(x, *d_layer_config[0])
-
-    x = EqualizedDense(1)(x)
+    x = EqualizedDense(1, gain=1)(x)
 
     d_model = keras.models.Model(img_input, x, name="discriminator")
     return d_model
 
 
-def deconv_block(x, depth, strides, kernel_size):
-    x = layers.UpSampling2D(strides, interpolation="bilinear")(x)
-    x = EqualizedConv2D(FILTER_DEPTH * depth, kernel_size=kernel_size, kernel_initializer=initializer, strides=1, padding="same")(x)
+def deconv_block(x, depth, strides, upsampling=True):
+    if upsampling:
+        x = layers.UpSampling2D(strides, interpolation="nearest")(x)
+        x = EqualizedConv2D(FILTER_DEPTH * depth, kernel_size=3, kernel_initializer=initializer, strides=1, padding="same")(x)
     x = layers.LeakyReLU(0.2)(x)
     x = pixel_norm(x)
-    x = EqualizedConv2D(FILTER_DEPTH * depth, kernel_size=max(3, kernel_size - 1), kernel_initializer=initializer, strides=1, padding="same")(x)
+    x = EqualizedConv2D(FILTER_DEPTH * depth, kernel_size=3, kernel_initializer=initializer, strides=1, padding="same")(x)
     x = layers.LeakyReLU(0.2)(x)
     x = pixel_norm(x)
     return x
 
 
-def g_transition_block(x, depth, strides, kernel_size, weights=None):
+def g_transition_block(x, depth, strides, weights=None):
     old_exit = EqualizedConv2D(filters=1, kernel_size=1, kernel_initializer=initializer, strides=1, padding="same")
     y = old_exit(x)
     if weights:
         old_exit.set_weights(weights)
-    y = layers.UpSampling2D(strides, interpolation="bilinear")(y)
+    y = layers.UpSampling2D(strides, interpolation="nearest")(y)
     y = layers.Activation("linear")(y)
 
-    x = deconv_block(x, depth, strides, kernel_size)
+    x = deconv_block(x, depth, strides)
     x = EqualizedConv2D(filters=1, kernel_size=1, kernel_initializer=initializer, strides=1, padding="same")(x)
     x = layers.Activation("linear")(x)
 
@@ -279,21 +316,31 @@ def g_transition_block(x, depth, strides, kernel_size, weights=None):
 
 
 g_layer_config = [
-    [128, 4, 4],
-    [128, 2, 3],
-    [64, 2, 3],
-    [32, 2, 3],
-    [16, 2, 3],
-    [8, 2, 3],
-    [4, 2, 3]
+    [128, 4],
+    [128, 2],
+    [64, 2],
+    [32, 2],
+    [16, 2],
+    [8, 2],
+    [4, 2]
 ]
 
 
 def get_generator_model():
     noise = layers.Input(shape=(noise_dim,))
-    x = layers.Reshape((1, 1, FILTER_DEPTH * 128))(noise)
+    x = EqualizedDense(FILTER_DEPTH * 128 * 4 * 4, gain=np.sqrt(2)/4)(noise)
+    x = layers.Reshape((4, 4, FILTER_DEPTH * 128))(x)
+    #x = EqualizedConv2D(FILTER_DEPTH * 128, kernel_size=4, kernel_initializer=initializer, strides=1, padding="same")(x)
 
-    x = deconv_block(x, *g_layer_config[0])
+    x = deconv_block(x, *g_layer_config[0], upsampling=False)
+    if not DO_GROWTH:
+        x = deconv_block(x, *g_layer_config[1])
+        x = deconv_block(x, *g_layer_config[2])
+        x = deconv_block(x, *g_layer_config[3])
+        x = deconv_block(x, *g_layer_config[4])
+        x = deconv_block(x, *g_layer_config[5])
+        x = deconv_block(x, *g_layer_config[6])
+
     x = EqualizedConv2D(filters=1, kernel_size=1, kernel_initializer=initializer, strides=1, padding="same")(x)
     x = layers.Activation("linear")(x)
 
@@ -369,7 +416,7 @@ class WGAN(keras.Model):
 
         if IS_TRANSITION:
             small_images = tf.image.resize(real_images, (int(IMG_SHAPE[0]/2), int(IMG_SHAPE[1]/2)))
-            small_images = tf.image.resize(small_images, IMG_SHAPE[:2], method=tf.image.ResizeMethod.BILINEAR)
+            small_images = tf.image.resize(small_images, IMG_SHAPE[:2], method=tf.image.ResizeMethod.NEAREST_NEIGHBOR)
             real_images = lerp(small_images, real_images, CURRENT_TRANSITION)
         #if IMG_SHAPE[0] != img_shape_config[-1][0]:
         #    real_images = tf.image.resize(real_images, IMG_SHAPE[:2])
@@ -471,9 +518,12 @@ class GANMonitor(keras.callbacks.Callback):
             img = keras.preprocessing.image.array_to_img(img)
             img.save("output\\{epoch}_heightmap_{i}.png".format(i=i, epoch=current_epoch))
 
-        if not IS_TRANSITION:
+        if DO_SAVE and not IS_TRANSITION:
             self.model.generator.save("models\\Generator_{epoch}.h5".format(epoch=current_epoch))
             self.model.discriminator.save("models\\Discriminator.h5")
+
+        if not DO_GROWTH:
+            return
 
         if epoch == 0 and EPOCHS_PER_SIZE != 1:
             return
@@ -504,9 +554,6 @@ class GANMonitor(keras.callbacks.Callback):
                 self.extend_discriminator(current_network)
                 self.extend_generator(current_network)
         # Saving network only possible when not in resolution transition phase
-        # if not IS_TRANSITION:
-            # self.model.generator.save("models\\Generator_{epoch}.h5".format(epoch=epoch))
-            # self.model.discriminator.save("models\\Discriminator.h5")
 
     def extend_generator(self, config):
         config = g_layer_config[config]
@@ -614,19 +661,22 @@ if __name__ == "__main__":
         gc.collect()
         train_images = get_images(IMG_SHAPE[0])"""
 
-    # Start training the model.
-    for i in range(int(TOTAL_EPOCHS / EPOCHS_PER_SIZE)):
-        if IS_TRANSITION:
-            del train_images
-            gc.collect()
-            train_images = get_images(IMG_SHAPE[0])
-            BATCH_SIZE = int(BATCH_SIZE / 2)
+    if not DO_GROWTH:
         wgan.fit(train_images, batch_size=BATCH_SIZE, epochs=EPOCHS_PER_SIZE, callbacks=[cbk])
-        wgan = WGAN(discriminator=wgan.discriminator, generator=wgan.generator, latent_dim=noise_dim, discriminator_extra_steps=1)
-        wgan.compile(
-            d_optimizer=discriminator_optimizer,
-            g_optimizer=generator_optimizer,
-            g_loss_fn=generator_loss,
-            d_loss_fn=discriminator_loss,
-        )
-        cbk.next()
+    else:
+        # Start training the model.
+        for i in range(int(TOTAL_EPOCHS / EPOCHS_PER_SIZE)):
+            if IS_TRANSITION:
+                del train_images
+                gc.collect()
+                train_images = get_images(IMG_SHAPE[0])
+                # BATCH_SIZE = int(BATCH_SIZE / 2)
+            wgan.fit(train_images, batch_size=BATCH_SIZE, epochs=EPOCHS_PER_SIZE, callbacks=[cbk])
+            wgan = WGAN(discriminator=wgan.discriminator, generator=wgan.generator, latent_dim=noise_dim, discriminator_extra_steps=1)
+            wgan.compile(
+                d_optimizer=discriminator_optimizer,
+                g_optimizer=generator_optimizer,
+                g_loss_fn=generator_loss,
+                d_loss_fn=discriminator_loss,
+            )
+            cbk.next()
