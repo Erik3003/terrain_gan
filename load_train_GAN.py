@@ -3,7 +3,7 @@
 import tensorflow as tf
 from tensorflow import keras
 from wgan_gp import WGAN, generator_loss, discriminator_loss, train_images, BATCH_SIZE, generator_optimizer, \
-    discriminator_optimizer, noise_dim
+    discriminator_optimizer, noise_dim, EqualizedConv2D, EqualizedDense, MinibatchStdev
 
 # number of epochs you want to train
 epochs = 6
@@ -28,9 +28,9 @@ class GANMonitorNEW(keras.callbacks.Callback):
         for i in range(self.num_img):
             img = generated_images[i].numpy()
             img = keras.preprocessing.image.array_to_img(img)
-            img.save("output\\{epoch}_heightmap_{i}.png".format(i=i, epoch=epoch))
+            img.save("output\\{epoch}_heightmap_{i}.png".format(i=i, epoch=epoch + startEpoch))
 
-        self.model.generator.save("retrained_models\\Generator_{epoch}.h5".format(epoch=epoch + startEpoch + 1))
+        self.model.generator.save("retrained_models\\Generator_{epoch}.h5".format(epoch=epoch + startEpoch))
         self.model.discriminator.save("retrained_models\\Discriminator.h5")
 
 
@@ -50,11 +50,7 @@ newGanModel.compile(
 )
 
 # Instantiate the customer `GANMonitor` Keras callback.
-cbk = GANMonitorNEW(num_img=6, latent_dim=noise_dim)
+cbk = GANMonitorNEW(num_img=1, latent_dim=noise_dim)
 
 # Start training the model.
 newGanModel.fit(train_images, batch_size=BATCH_SIZE, epochs=epochs, callbacks=[cbk])
-newGanModel.fit(train_images, batch_size=int(BATCH_SIZE / 2), epochs=epochs, callbacks=[cbk])
-newGanModel.fit(train_images, batch_size=int(BATCH_SIZE / 4), epochs=epochs, callbacks=[cbk])
-newGanModel.fit(train_images, batch_size=int(BATCH_SIZE / 8), epochs=epochs, callbacks=[cbk])
-newGanModel.fit(train_images, batch_size=int(BATCH_SIZE / 16), epochs=epochs, callbacks=[cbk])

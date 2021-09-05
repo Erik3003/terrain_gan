@@ -71,9 +71,8 @@ CURRENT_SIZE = 0
 CURRENT_TRANSITION = tf.Variable(1.0, trainable=False)
 TRANSITION_SPEED = 0.0
 IS_TRANSITION = False
-ALLOW_IMAGE = False
 DO_GROWTH = True
-DO_SAVE = False
+DO_SAVE = True
 
 # Size of the noise vector
 noise_dim = 512
@@ -85,19 +84,19 @@ if not DO_GROWTH:
 def get_images(res):
     # 86176
     images = []
-    for index in range(1024):
-        image = cv2.imread("data\\out\\" + str(index) + ".png", cv2.IMREAD_GRAYSCALE)
+    for index in range(86176):
+        image = cv2.imread("data\\img\\" + str(index) + ".png", cv2.IMREAD_GRAYSCALE)
         if res != 256:
             image = cv2.resize(image, (res, res))
         images.append(image)
-        images.append(cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE))
+        """images.append(cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE))
         images.append(cv2.rotate(image, cv2.ROTATE_180))
         images.append(cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE))
         image = cv2.flip(image, 1)
         images.append(image)
         images.append(cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE))
         images.append(cv2.rotate(image, cv2.ROTATE_180))
-        images.append(cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE))
+        images.append(cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE))"""
         del image
 
     images = np.array(images, dtype="float32")
@@ -228,7 +227,7 @@ def conv_block(x, depth, depth_multiplier=2, weights=None, downsample=True):
 
 def d_transition_block(x, depth, depth_multiplier=2, weights=None):
     y = layers.AveragePooling2D(2)(x)
-    old_exit = EqualizedConv2D(FILTER_DEPTH * depth * depth_multiplier, kernel_size=1, kernel_initializer=initializer, strides=1, padding="same")
+    old_exit = EqualizedConv2D(FILTER_DEPTH * depth * depth_multiplier, kernel_size=1, kernel_initializer=initializer, strides=1, padding="same", trainable=False)
     y = old_exit(y)
     if weights:
         old_exit.set_weights(weights)
@@ -249,7 +248,7 @@ d_layer_config = [
     [64, 2],
     [32, 2],
     [16, 2],
-    [8, 2],
+    [8, 2]
 ]
 
 
@@ -301,7 +300,7 @@ def deconv_block(x, depth, upsampling=True):
 
 
 def g_transition_block(x, depth, weights=None):
-    old_exit = EqualizedConv2D(filters=1, kernel_size=1, kernel_initializer=initializer, strides=1, padding="same")
+    old_exit = EqualizedConv2D(filters=1, kernel_size=1, kernel_initializer=initializer, strides=1, padding="same", trainable=False)
     y = old_exit(x)
     if weights:
         old_exit.set_weights(weights)
@@ -417,7 +416,7 @@ class WGAN(keras.Model):
 
         if IS_TRANSITION:
             small_images = tf.image.resize(real_images, (int(IMG_SHAPE[0]/2), int(IMG_SHAPE[1]/2)))
-            small_images = tf.image.resize(small_images, IMG_SHAPE[:2], method=tf.image.ResizeMethod.NEAREST_NEIGHBOR)
+            small_images = tf.image.resize(small_images, IMG_SHAPE[:2], method=tf.image.ResizeMethod.BILINEAR)
             real_images = lerp(small_images, real_images, CURRENT_TRANSITION)
         #if IMG_SHAPE[0] != img_shape_config[-1][0]:
         #    real_images = tf.image.resize(real_images, IMG_SHAPE[:2])
@@ -547,8 +546,6 @@ class GANMonitor(keras.callbacks.Callback):
             else:
                 print("Changing to transition")
                 IS_TRANSITION = True
-                global ALLOW_IMAGE
-                ALLOW_IMAGE = True
                 global IMG_SHAPE
                 IMG_SHAPE = img_shape_config[current_network]
                 CURRENT_TRANSITION.assign(0.0)
@@ -619,6 +616,8 @@ def generator_loss(fake_img):
     return -tf.reduce_mean(fake_img)
 # learning_rate=0.0002, beta_1=0.0, beta_2=0.7233293237969016, epsilon=1e-8
 # learning_rate=0.0002, beta_1=0.0, beta_2=0.99, epsilon=1e-8
+
+# d_lr=0.001, g_lr=0.0002, n_critic=4
 generator_optimizer = keras.optimizers.Adam(
     learning_rate=0.001, beta_1=0.0, beta_2=0.99, epsilon=1e-8
 )
@@ -640,7 +639,7 @@ if __name__ == "__main__":
         discriminator=d_model,
         generator=g_model,
         latent_dim=noise_dim,
-        discriminator_extra_steps=1,
+        discriminator_extra_steps=1
     )
 
     # Compile the WGAN model.
@@ -648,7 +647,7 @@ if __name__ == "__main__":
         d_optimizer=discriminator_optimizer,
         g_optimizer=generator_optimizer,
         g_loss_fn=generator_loss,
-        d_loss_fn=discriminator_loss,
+        d_loss_fn=discriminator_loss
     )
 
     steps_per_epoch = int(math.ceil(len(train_images) / BATCH_SIZE))
@@ -676,12 +675,13 @@ if __name__ == "__main__":
                     BATCH_SIZE = 16
                 if cbk.stage == 12 or not DO_GROWTH:
                     BATCH_SIZE = 8
+                steps_per_epoch = int(math.ceil(len(train_images) / BATCH_SIZE))
             wgan.fit(train_images, batch_size=BATCH_SIZE, epochs=EPOCHS_PER_SIZE, callbacks=[cbk])
             wgan = WGAN(discriminator=wgan.discriminator, generator=wgan.generator, latent_dim=noise_dim, discriminator_extra_steps=1)
             wgan.compile(
                 d_optimizer=discriminator_optimizer,
                 g_optimizer=generator_optimizer,
                 g_loss_fn=generator_loss,
-                d_loss_fn=discriminator_loss,
+                d_loss_fn=discriminator_loss
             )
             cbk.next()
