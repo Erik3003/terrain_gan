@@ -8,13 +8,6 @@ IMG_SHAPE = (256, 256, 1)
 
 
 def clean_sample(sample):
-    # Get rid of "out-of-bounds" magic values.
-    sample[sample == np.finfo('float32').min] = 0.0
-
-    # Ignore any samples with NaNs, for one reason or another.
-    if np.isnan(sample).any():
-        return None
-
     # Only accept values that span a given range. This is to capture more
     # mountainous samples.
     if (sample.max() - sample.min()) < 40:

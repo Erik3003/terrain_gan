@@ -6,17 +6,19 @@ from wgan_gp import WGAN, generator_loss, discriminator_loss, train_images, BATC
     discriminator_optimizer, noise_dim, EqualizedConv2D, EqualizedDense, MinibatchStdev
 
 # number of epochs you want to train
-epochs = 6
+epochs = 30
 
 # Epoch of the Generator version - change this to start for training a specific model in models folder
-startEpoch = 1
-
-g_model = keras.models.load_model('./models/Generator_{epoch}.h5'.format(epoch=startEpoch))
-d_model = keras.models.load_model('./models/Discriminator.h5')
+startEpoch = 28
+# .format(epoch=startEpoch)
+custom_objects = {"EqualizedConv2D": EqualizedConv2D, "EqualizedDense": EqualizedDense, "MinibatchStdev": MinibatchStdev}
+with keras.utils.custom_object_scope(custom_objects):
+    g_model = keras.models.load_model('./models/Generator_NOGROWTH_OK.h5')
+    d_model = keras.models.load_model('./models/Discriminator_NOGROWTH_OK.h5')
 
 
 class GANMonitorNEW(keras.callbacks.Callback):
-    def __init__(self, num_img=5, latent_dim=128):
+    def __init__(self, num_img=1, latent_dim=128):
         self.num_img = num_img
         self.latent_dim = latent_dim
         self.random_latent_vectors = tf.random.normal(shape=(self.num_img, self.latent_dim), seed=3342934)
@@ -53,4 +55,4 @@ newGanModel.compile(
 cbk = GANMonitorNEW(num_img=1, latent_dim=noise_dim)
 
 # Start training the model.
-newGanModel.fit(train_images, batch_size=BATCH_SIZE, epochs=epochs, callbacks=[cbk])
+newGanModel.fit(train_images, batch_size=16, epochs=epochs, callbacks=[cbk])
